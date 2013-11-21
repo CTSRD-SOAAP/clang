@@ -151,6 +151,8 @@ ENUM_CODEGENOPT(DefaultTLSModel, TLSModel, 2, GeneralDynamicTLSModel)
 CODEGENOPT(SanitizeRecover, 1, 1) ///< Attempt to recover from sanitizer checks
                                   ///< by continuing execution when possible
 
+CODEGENOPT(SoaapVTableDbg, 1, 0) ///< Add soaap-related vtable debug metadata
+
 #undef CODEGENOPT
 #undef ENUM_CODEGENOPT
 #undef VALUE_CODEGENOPT

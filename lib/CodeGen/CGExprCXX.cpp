@@ -20,6 +20,8 @@
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/Support/CallSite.h"
 
+#include <sstream>
+
 using namespace clang;
 using namespace CodeGen;
 
@@ -68,6 +70,34 @@ static CXXRecordDecl *getCXXRecord(const Expr *E) {
     T = PTy->getPointeeType();
   const RecordType *Ty = T->castAs<RecordType>();
   return cast<CXXRecordDecl>(Ty->getDecl());
+}
+
+void CodeGenFunction::addSoaapVTableMetadata(llvm::CallInst* C, CXXRecordDecl* RD, std::string desc) {
+  // get mangled class name and thus the mangled vtable name
+  SmallString<64> MangledName;
+  llvm::raw_svector_ostream Out(MangledName);
+  CGM.getCXXABI().getMangleContext().mangleName(RD, Out);
+  StringRef mangledClassName = Out.str();
+  std::string mangledVTableName = mangledClassName.str().replace(0,2,"_ZTV");
+  std::size_t anonNsFound = mangledVTableName.find("_GLOBAL__N_1");
+  if (anonNsFound != std::string::npos) {
+    // vtable var will be defined in this Module, as anonymous classes cannot be 
+    // resolved outside of this compilation unit
+    CodeGenVTables& VTables = CGM.getVTables();
+    llvm::GlobalVariable* vtableVar = VTables.GetAddrOfVTable(RD);
+    llvm::MDNode* Node = llvm::MDNode::get(getLLVMContext(), vtableVar);
+    std::stringstream ss;
+    ss << "soaap_" << desc << "_vtable_var";
+    C->setMetadata(ss.str(), Node);
+  }
+  else {
+    std::stringstream ss;
+    ss << "soaap_" << desc << "_vtable_name";
+    // do not add terminating NULL, otherwise we won't be able to find the vtable global var later
+    llvm::Constant* vtableNameConstant = llvm::ConstantDataArray::getString(getLLVMContext(), mangledVTableName, false); 
+    llvm::MDNode* Node = llvm::MDNode::get(getLLVMContext(), vtableNameConstant);
+    C->setMetadata(ss.str(), Node);
+  }
 }
 
 // Note: This function also emit constructor calls to support a MSVC
@@ -221,9 +251,61 @@ RValue CodeGenFunction::EmitCXXMemberCallExpr(const CXXMemberCallExpr *CE,
   if (MD->isVirtual())
     This = CGM.getCXXABI().adjustThisArgumentForVirtualCall(*this, MD, This);
 
-  return EmitCXXMemberCall(MD, CE->getExprLoc(), Callee, ReturnValue, This,
+  RValue rval = EmitCXXMemberCall(MD, CE->getExprLoc(), Callee, ReturnValue, This,
                            /*ImplicitParam=*/0, QualType(),
                            CE->arg_begin(), CE->arg_end());
+
+  // Add SOAAP-related vtable metadata
+  if (CGM.getCodeGenOpts().SoaapVTableDbg && MD->isVirtual()) {
+    CXXRecordDecl* DRD = (CXXRecordDecl*)MD->getParent();
+    llvm::BasicBlock::iterator I = Builder.GetInsertPoint();
+    if (&*--I != NULL) {
+      if (llvm::CallInst* C = dyn_cast<llvm::CallInst>(&*I)) {
+        //C->dump();
+        //CE->dump();
+        addSoaapVTableMetadata(C, DRD, "defining");
+        //llvm::dbgs() << "defining var type: " << DRD->getName() << "\n";
+        if (DeclRefExpr* DR = dyn_cast<DeclRefExpr>(CE->getImplicitObjectArgument()->IgnoreImplicit())) {
+          //llvm::dbgs() << DR->getDecl()->getName() << "\n";
+          if (const PointerType* PT = dyn_cast<const PointerType>(DR->getDecl()->getType())) {
+            if (const RecordType* RT = dyn_cast<const RecordType>(PT->getPointeeType())) {
+              CXXRecordDecl* SRD = dyn_cast<CXXRecordDecl>(RT->getDecl());
+              //llvm::dbgs() << "static var type: " << SRD->getName() << "\n";
+              addSoaapVTableMetadata(C, SRD, "static");
+            }
+          }
+        }
+        else if (MemberExpr* ME = dyn_cast<MemberExpr>(CE->getImplicitObjectArgument()->IgnoreImplicit())) {
+          llvm::dbgs() << "MemberExpr\n";
+          //llvm::dbgs() << ME->getMemberDecl()->getName() << "\n";
+          if (const PointerType* PT = dyn_cast<const PointerType>(ME->getMemberDecl()->getType())) {
+            if (const RecordType* RT = dyn_cast<const RecordType>(PT->getPointeeType())) {
+              CXXRecordDecl* SRD = dyn_cast<CXXRecordDecl>(RT->getDecl());
+              //llvm::dbgs() << "static var type: " << SRD->getName() << "\n";
+              addSoaapVTableMetadata(C, SRD, "static");
+            }
+          }
+        }
+        else if (CXXThisExpr* TE = dyn_cast<CXXThisExpr>(CE->getImplicitObjectArgument()->IgnoreImplicit())) {
+          if (const PointerType* PT = dyn_cast<const PointerType>(TE->getType().getTypePtr())) {
+            if (const RecordType* RT = dyn_cast<const RecordType>(PT->getPointeeType())) {
+              CXXRecordDecl* SRD = dyn_cast<CXXRecordDecl>(RT->getDecl());
+              //llvm::dbgs() << "static var type: " << SRD->getName() << "\n";
+              addSoaapVTableMetadata(C, SRD, "static");
+            }
+          }
+        }
+        else {
+          llvm::dbgs() << "ERROR: cannot obtain the static type of the implicit object argument!\n";
+        }
+      }
+      else {
+        llvm::dbgs() << "ERROR: instruction is not a CallInst\n";
+      }
+    }
+  }
+
+  return rval;
 }
 
 RValue

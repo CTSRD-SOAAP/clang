@@ -2494,6 +2494,10 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     }
   }
 
+  // Preserve SOAAP options
+  if (Args.hasArg(options::OPT_gsoaap))
+    CmdArgs.push_back("-gsoaap");
+
   // We ignore flags -gstrict-dwarf and -grecord-gcc-switches for now.
   Args.ClaimAllArgs(options::OPT_g_flags_Group);
   if (Args.hasArg(options::OPT_gcolumn_info))
