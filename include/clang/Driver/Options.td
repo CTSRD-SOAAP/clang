@@ -682,7 +682,7 @@ def fno_objc_infer_related_result_type : Flag<["-"],
 def fobjc_link_runtime: Flag<["-"], "fobjc-link-runtime">, Group<f_Group>;
 
 // SOAAP options
-def gsoaap : Flag<["-"], "gsoaap">, Group<g_Group>,
+def gsoaap : Flag<["-"], "gsoaap">, Group<f_clang_Group>,
   HelpText<"Emit SOAAP-related vtable metadata">, Flags<[CC1Option]>;
 
 // Objective-C ABI options.
