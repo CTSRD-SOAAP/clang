@@ -17,6 +17,7 @@
 #include "CGDebugInfo.h"
 #include "CGObjCRuntime.h"
 #include "clang/Frontend/CodeGenOptions.h"
+#include "clang/Basic/OperatorKinds.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/Support/CallSite.h"
 
@@ -257,51 +258,59 @@ RValue CodeGenFunction::EmitCXXMemberCallExpr(const CXXMemberCallExpr *CE,
 
   // Add SOAAP-related vtable metadata
   if (CGM.getCodeGenOpts().SoaapVTableDbg && MD->isVirtual()) {
-    CXXRecordDecl* DRD = (CXXRecordDecl*)MD->getParent();
+    
     llvm::BasicBlock::iterator I = Builder.GetInsertPoint();
-    if (&*--I != NULL) {
-      if (llvm::CallInst* C = dyn_cast<llvm::CallInst>(&*I)) {
-        //C->dump();
-        //CE->dump();
-        addSoaapVTableMetadata(C, DRD, "defining");
-        //llvm::dbgs() << "defining var type: " << DRD->getName() << "\n";
-        if (DeclRefExpr* DR = dyn_cast<DeclRefExpr>(CE->getImplicitObjectArgument()->IgnoreImplicit())) {
-          //llvm::dbgs() << DR->getDecl()->getName() << "\n";
-          if (const PointerType* PT = dyn_cast<const PointerType>(DR->getDecl()->getType())) {
-            if (const RecordType* RT = dyn_cast<const RecordType>(PT->getPointeeType())) {
-              CXXRecordDecl* SRD = dyn_cast<CXXRecordDecl>(RT->getDecl());
-              //llvm::dbgs() << "static var type: " << SRD->getName() << "\n";
-              addSoaapVTableMetadata(C, SRD, "static");
-            }
-          }
-        }
-        else if (MemberExpr* ME = dyn_cast<MemberExpr>(CE->getImplicitObjectArgument()->IgnoreImplicit())) {
-          llvm::dbgs() << "MemberExpr\n";
-          //llvm::dbgs() << ME->getMemberDecl()->getName() << "\n";
-          if (const PointerType* PT = dyn_cast<const PointerType>(ME->getMemberDecl()->getType())) {
-            if (const RecordType* RT = dyn_cast<const RecordType>(PT->getPointeeType())) {
-              CXXRecordDecl* SRD = dyn_cast<CXXRecordDecl>(RT->getDecl());
-              //llvm::dbgs() << "static var type: " << SRD->getName() << "\n";
-              addSoaapVTableMetadata(C, SRD, "static");
-            }
-          }
-        }
-        else if (CXXThisExpr* TE = dyn_cast<CXXThisExpr>(CE->getImplicitObjectArgument()->IgnoreImplicit())) {
-          if (const PointerType* PT = dyn_cast<const PointerType>(TE->getType().getTypePtr())) {
-            if (const RecordType* RT = dyn_cast<const RecordType>(PT->getPointeeType())) {
-              CXXRecordDecl* SRD = dyn_cast<CXXRecordDecl>(RT->getDecl());
-              //llvm::dbgs() << "static var type: " << SRD->getName() << "\n";
-              addSoaapVTableMetadata(C, SRD, "static");
-            }
-          }
+
+    // find the CallInst that corresponds to this virtual call
+    // Due to the recursive way in which IR instructions are generated from ASTs,
+    // we search backwards from the current insertion point.
+    llvm::CallInst* C = NULL;
+    while (true) {
+      I--;
+      //llvm::dbgs() << "Checking " << *I << "\n";
+      if ((C = dyn_cast<llvm::CallInst>(&*I))) {
+        //llvm::dbgs() << "Found\n";
+        break;
+      }
+    }
+    if (C) {
+      CXXRecordDecl* DRD = (CXXRecordDecl*)MD->getParent();
+      addSoaapVTableMetadata(C, DRD, "defining");
+
+      bool staticTypeFound = false;
+      Expr* Receiver = CE->getImplicitObjectArgument()->IgnoreParenImpCasts();
+      const Type* ReceiverType = Receiver->getType().getTypePtr();
+      if (!ReceiverType->isRecordType()) {
+        if (const PointerType* PT = ReceiverType->getAs<const PointerType>()) {
+          ReceiverType = PT->getPointeeType().getTypePtr();
         }
         else {
-          llvm::dbgs() << "ERROR: cannot obtain the static type of the implicit object argument!\n";
+          llvm::dbgs() << "ERROR: receiver type is not a pointer type\n";
+          ReceiverType->dump();
         }
       }
-      else {
-        llvm::dbgs() << "ERROR: instruction is not a CallInst\n";
+      if (const RecordType* RT = ReceiverType->getAs<const RecordType>()) {
+        CXXRecordDecl* SRD = dyn_cast<CXXRecordDecl>(RT->getDecl());
+        //llvm::dbgs() << "static var type: " << SRD->getName() << "\n";
+        //llvm::dbgs() << "Receiver is a DeclRefExpr. Static var type: " << SRD->getName() << "\n";
+        //CE->getLocStart().print(llvm::dbgs(), getContext().getSourceManager());
+        //C->dump();
+        //CE->getImplicitObjectArgument()->IgnoreParenCasts()->dump();
+        addSoaapVTableMetadata(C, SRD, "static");
+        staticTypeFound = true;
       }
+
+      if (!staticTypeFound) {
+        llvm::dbgs() << "ERROR: cannot obtain the static type of the implicit object argument!\n";
+        CE->getLocStart().print(llvm::dbgs(), getContext().getSourceManager());
+        C->dump();
+        Receiver->dump();
+      }
+    }
+    else {
+      llvm::dbgs() << "ERROR: no CallInst was found from CXXMemberCallExpr\n";
+      CE->getLocStart().print(llvm::dbgs(), getContext().getSourceManager());
+      CE->dump();
     }
   }
 
