@@ -85,8 +85,7 @@ void CodeGenFunction::addSoaapVTableMetadata(llvm::CallInst* C, CXXRecordDecl* R
   if (anonNsFound != std::string::npos) {
     // vtable var will be defined in this Module, as anonymous classes cannot be 
     // resolved outside of this compilation unit
-    CodeGenVTables& VTables = CGM.getVTables();
-    llvm::GlobalVariable* vtableVar = VTables.GetAddrOfVTable(RD);
+    llvm::GlobalVariable* vtableVar = CGM.getCXXABI().getAddrOfVTable(RD, CharUnits());
     llvm::MDNode* Node = llvm::MDNode::get(getLLVMContext(), vtableVar);
     std::stringstream ss;
     ss << "soaap_" << desc << "_vtable_var";
