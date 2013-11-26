@@ -96,13 +96,12 @@ int main(int argc, char **argv) {
 // CHECK: DW_TAG_class_type ] [B] {{.*}} [def]
 // CHECK: metadata !"_vptr$B", {{.*}}, i32 64, metadata !{{.*}}} ; [ DW_TAG_member ]
 
-// CHECK: [[C:![0-9]*]] = {{.*}} metadata [[C_MEM:![0-9]*]], i32 0, metadata [[C]], null, metadata !"_ZTS1C"} ; [ DW_TAG_structure_type ] [C] {{.*}} [def]
+// CHECK: [[C:![0-9]*]] = {{.*}} metadata [[C_MEM:![0-9]*]], i32 0, metadata !"_ZTS1C", null, metadata !"_ZTS1C"} ; [ DW_TAG_structure_type ] [C] {{.*}} [def]
 // CHECK: [[C_MEM]] = metadata !{metadata [[C_VPTR:![0-9]*]], metadata [[C_S:![0-9]*]], metadata [[C_DTOR:![0-9]*]]}
 // CHECK: [[C_VPTR]] = {{.*}} ; [ DW_TAG_member ] [_vptr$C] {{.*}} [artificial]
 // CHECK: [[C_S]] = {{.*}} ; [ DW_TAG_member ] [s] {{.*}} [static] [from int]
 // CHECK: [[C_DTOR]] = {{.*}} ; [ DW_TAG_subprogram ] {{.*}} [~C]
 
-// CHECK: ; [ DW_TAG_structure_type ] [I] {{.*}} [def]
 // CHECK: metadata [[D_MEM:![0-9]*]], i32 0, null, null, metadata !"_ZTS1D"} ; [ DW_TAG_structure_type ] [D] {{.*}} [decl]
 // CHECK: [[D_MEM]] = metadata !{metadata [[D_FUNC:![0-9]*]]}
 // CHECK: [[D_FUNC]] = {{.*}} ; [ DW_TAG_subprogram ] {{.*}} [func]
@@ -118,6 +117,7 @@ int main(int argc, char **argv) {
 
 // CHECK: ; [ DW_TAG_structure_type ] [A]
 // CHECK: HdrSize
+// CHECK: ; [ DW_TAG_structure_type ] [I] {{.*}} [def]
 
 // CHECK: [[F_I_DEF:![0-9]*]] = {{.*}}, metadata [[F_I]]} ; [ DW_TAG_variable ] [i]
 

@@ -82,6 +82,7 @@ protected:
     std::string GCCInstallPath;
     std::string GCCBiarchSuffix;
     std::string GCCParentLibPath;
+    std::string GCCMIPSABIDirSuffix;
 
     GCCVersion Version;
 
@@ -109,6 +110,20 @@ protected:
     /// \brief Get the detected GCC parent lib path.
     StringRef getParentLibPath() const { return GCCParentLibPath; }
 
+    /// \brief Get the detected GCC MIPS ABI directory suffix.
+    ///
+    /// This is used as a suffix both to the install directory of GCC and as
+    /// a suffix to its parent lib path in order to select a MIPS ABI-specific
+    /// subdirectory.
+    ///
+    /// This will always be empty for any non-MIPS target.
+    ///
+    // FIXME: This probably shouldn't exist at all, and should be factored
+    // into the multiarch and/or biarch support. Please don't add more uses of
+    // this interface, it is meant as a legacy crutch for the MIPS driver
+    // logic.
+    StringRef getMIPSABIDirSuffix() const { return GCCMIPSABIDirSuffix; }
+
     /// \brief Get the detected GCC version string.
     const GCCVersion &getVersion() const { return Version; }
 
@@ -129,6 +144,10 @@ protected:
                                 const std::string &LibDir,
                                 StringRef CandidateTriple,
                                 bool NeedsBiarchSuffix = false);
+
+    void findMIPSABIDirSuffix(std::string &Suffix,
+                              llvm::Triple::ArchType TargetArch, StringRef Path,
+                              const llvm::opt::ArgList &Args);
   };
 
   GCCInstallationDetector GCCInstallation;
@@ -144,6 +163,7 @@ public:
   virtual bool isPICDefault() const;
   virtual bool isPIEDefault() const;
   virtual bool isPICDefaultForced() const;
+  virtual bool IsIntegratedAssemblerDefault() const;
 
 protected:
   virtual Tool *getTool(Action::ActionClass AC) const;
@@ -163,7 +183,6 @@ protected:
 
 private:
   mutable OwningPtr<tools::gcc::Preprocess> Preprocess;
-  mutable OwningPtr<tools::gcc::Precompile> Precompile;
   mutable OwningPtr<tools::gcc::Compile> Compile;
 };
 
@@ -309,19 +328,8 @@ public:
     return true;
   }
   virtual bool IsIntegratedAssemblerDefault() const {
-#ifdef DISABLE_DEFAULT_INTEGRATED_ASSEMBLER
-    return false;
-#else
     // Default integrated assembler to on for Darwin.
     return true;
-#endif
-  }
-  virtual bool IsStrictAliasingDefault() const {
-#ifdef DISABLE_DEFAULT_STRICT_ALIASING
-    return false;
-#else
-    return ToolChain::IsStrictAliasingDefault();
-#endif
   }
 
   virtual bool IsMathErrnoDefault() const {
@@ -398,19 +406,6 @@ public:
   /// }
 };
 
-/// Darwin_Generic_GCC - Generic Darwin tool chain using gcc.
-class LLVM_LIBRARY_VISIBILITY Darwin_Generic_GCC : public Generic_GCC {
-public:
-  Darwin_Generic_GCC(const Driver &D, const llvm::Triple &Triple,
-                     const llvm::opt::ArgList &Args)
-      : Generic_GCC(D, Triple, Args) {}
-
-  std::string ComputeEffectiveClangTriple(const llvm::opt::ArgList &Args,
-                                          types::ID InputType) const;
-
-  virtual bool isPICDefault() const { return false; }
-};
-
 class LLVM_LIBRARY_VISIBILITY Generic_ELF : public Generic_GCC {
   virtual void anchor();
 public:
@@ -419,10 +414,9 @@ public:
       : Generic_GCC(D, Triple, Args) {}
 
   virtual bool IsIntegratedAssemblerDefault() const {
-    // Default integrated assembler to on for x86.
-    return (getTriple().getArch() == llvm::Triple::aarch64 ||
-            getTriple().getArch() == llvm::Triple::x86 ||
-            getTriple().getArch() == llvm::Triple::x86_64);
+    if (getTriple().getArch() == llvm::Triple::aarch64)
+      return true;
+    return Generic_GCC::IsIntegratedAssemblerDefault();
   }
 };
 
@@ -494,14 +488,18 @@ class LLVM_LIBRARY_VISIBILITY FreeBSD : public Generic_ELF {
 public:
   FreeBSD(const Driver &D, const llvm::Triple &Triple,
           const llvm::opt::ArgList &Args);
+  virtual bool HasNativeLLVMSupport() const;
 
   virtual CXXStdlibType GetCXXStdlibType(const llvm::opt::ArgList &Args) const;
 
   virtual bool IsMathErrnoDefault() const { return false; }
   virtual bool IsObjCNonFragileABIDefault() const { return true; }
 
-  virtual void AddClangCXXStdlibIncludeArgs(const llvm::opt::ArgList&,
-                                            tools::ArgStringList&) const;
+  virtual CXXStdlibType GetCXXStdlibType(const llvm::opt::ArgList &Args) const;
+  virtual void
+  AddClangCXXStdlibIncludeArgs(const llvm::opt::ArgList &DriverArgs,
+                               llvm::opt::ArgStringList &CC1Args) const;
+
 
   virtual bool UseSjLjExceptions() const;
 protected:
@@ -585,14 +583,15 @@ protected:
 private:
   static bool addLibStdCXXIncludePaths(Twine Base, Twine Suffix,
                                        Twine TargetArchDir,
-                                       Twine MultiLibSuffix,
+                                       Twine BiarchSuffix,
+                                       Twine MIPSABIDirSuffix,
                                        const llvm::opt::ArgList &DriverArgs,
                                        llvm::opt::ArgStringList &CC1Args);
   static bool addLibStdCXXIncludePaths(Twine Base, Twine TargetArchDir,
                                        const llvm::opt::ArgList &DriverArgs,
                                        llvm::opt::ArgStringList &CC1Args);
 
-  std::string computeSysRoot(const llvm::opt::ArgList &Args) const;
+  std::string computeSysRoot() const;
 };
 
 class LLVM_LIBRARY_VISIBILITY Hexagon_TC : public Linux {
@@ -656,6 +655,30 @@ public:
 protected:
   virtual Tool *buildLinker() const;
   virtual Tool *buildAssembler() const;
+};
+
+
+class LLVM_LIBRARY_VISIBILITY XCore : public ToolChain {
+public:
+  XCore(const Driver &D, const llvm::Triple &Triple,
+          const llvm::opt::ArgList &Args);
+protected:
+  virtual Tool *buildAssembler() const;
+  virtual Tool *buildLinker() const;
+public:
+  virtual bool isPICDefault() const;
+  virtual bool isPIEDefault() const;
+  virtual bool isPICDefaultForced() const;
+  virtual bool SupportsProfiling() const;
+  virtual bool hasBlocksRuntime() const;
+  virtual void AddClangSystemIncludeArgs(const llvm::opt::ArgList &DriverArgs,
+                            llvm::opt::ArgStringList &CC1Args) const;
+  virtual void addClangTargetOptions(const llvm::opt::ArgList &DriverArgs,
+                                     llvm::opt::ArgStringList &CC1Args) const;
+  virtual void AddClangCXXStdlibIncludeArgs(const llvm::opt::ArgList &DriverArgs,
+                               llvm::opt::ArgStringList &CC1Args) const;
+  virtual void AddCXXStdlibLibArgs(const llvm::opt::ArgList &Args,
+                                   llvm::opt::ArgStringList &CmdArgs) const;
 };
 
 } // end namespace toolchains

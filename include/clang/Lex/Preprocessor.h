@@ -222,7 +222,10 @@ class Preprocessor : public RefCountedBase<Preprocessor> {
 
   /// \brief The module import path that we're currently processing.
   SmallVector<std::pair<IdentifierInfo *, SourceLocation>, 2> ModuleImportPath;
-  
+
+  /// \brief Whether the last token we lexed was an '@'.
+  bool LastTokenWasAt;
+
   /// \brief Whether the module import expectes an identifier next. Otherwise,
   /// it expects a '.' or ';'.
   bool ModuleImportExpectsIdentifier;
@@ -273,22 +276,26 @@ class Preprocessor : public RefCountedBase<Preprocessor> {
     CLK_LexAfterModuleImport
   } CurLexerKind;
 
+  /// \brief True if the current lexer is for a submodule.
+  bool CurIsSubmodule;
+
   /// IncludeMacroStack - This keeps track of the stack of files currently
   /// \#included, and macros currently being expanded from, not counting
   /// CurLexer/CurTokenLexer.
   struct IncludeStackInfo {
     enum CurLexerKind     CurLexerKind;
+    bool                  IsSubmodule;
     Lexer                 *TheLexer;
     PTHLexer              *ThePTHLexer;
     PreprocessorLexer     *ThePPLexer;
     TokenLexer            *TheTokenLexer;
     const DirectoryLookup *TheDirLookup;
 
-    IncludeStackInfo(enum CurLexerKind K, Lexer *L, PTHLexer* P,
-                     PreprocessorLexer* PPL,
-                     TokenLexer* TL, const DirectoryLookup *D)
-      : CurLexerKind(K), TheLexer(L), ThePTHLexer(P), ThePPLexer(PPL),
-        TheTokenLexer(TL), TheDirLookup(D) {}
+    IncludeStackInfo(enum CurLexerKind K, bool SM, Lexer *L, PTHLexer *P,
+                     PreprocessorLexer *PPL, TokenLexer *TL,
+                     const DirectoryLookup *D)
+        : CurLexerKind(K), IsSubmodule(SM), TheLexer(L), ThePTHLexer(P),
+          ThePPLexer(PPL), TheTokenLexer(TL), TheDirLookup(D) {}
   };
   std::vector<IncludeStackInfo> IncludeMacroStack;
 
@@ -659,7 +666,7 @@ public:
   /// start lexing tokens from it instead of the current buffer.  Emit an error
   /// and don't enter the file on error.
   void EnterSourceFile(FileID CurFileID, const DirectoryLookup *Dir,
-                       SourceLocation Loc);
+                       SourceLocation Loc, bool IsSubmodule = false);
 
   /// EnterMacro - Add a Macro to the top of the include stack and start lexing
   /// tokens from it instead of the current buffer.  Args specifies the
@@ -716,17 +723,8 @@ public:
   /// caching of tokens is on.
   bool isBacktrackEnabled() const { return !BacktrackPositions.empty(); }
 
-  /// Lex - To lex a token from the preprocessor, just pull a token from the
-  /// current lexer or macro object.
-  void Lex(Token &Result) {
-    switch (CurLexerKind) {
-    case CLK_Lexer: CurLexer->Lex(Result); break;
-    case CLK_PTHLexer: CurPTHLexer->Lex(Result); break;
-    case CLK_TokenLexer: CurTokenLexer->Lex(Result); break;
-    case CLK_CachingLexer: CachingLex(Result); break;
-    case CLK_LexAfterModuleImport: LexAfterModuleImport(Result); break;
-    }
-  }
+  /// Lex - Lex the next token for this preprocessor.
+  void Lex(Token &Result);
 
   void LexAfterModuleImport(Token &Result);
 
@@ -1161,6 +1159,9 @@ private:
   IdentifierInfo *Ident__abnormal_termination,
                  *Ident___abnormal_termination,
                  *Ident_AbnormalTermination;
+
+  const char *getCurLexerEndPos();
+
 public:
   void PoisonSEHIdentifiers(bool Poison = true); // Borland
 
@@ -1168,7 +1169,10 @@ public:
   /// identifier and has filled in the tokens IdentifierInfo member.  This
   /// callback potentially macro expands it or turns it into a named token (like
   /// 'for').
-  void HandleIdentifier(Token &Identifier);
+  ///
+  /// \returns true if we actually computed a token, false if we need to
+  /// lex again.
+  bool HandleIdentifier(Token &Identifier);
 
 
   /// HandleEndOfFile - This callback is invoked when the lexer hits the end of
@@ -1268,6 +1272,7 @@ private:
 
   void PushIncludeMacroStack() {
     IncludeMacroStack.push_back(IncludeStackInfo(CurLexerKind,
+                                                 CurIsSubmodule,
                                                  CurLexer.take(),
                                                  CurPTHLexer.take(),
                                                  CurPPLexer,
@@ -1283,8 +1288,11 @@ private:
     CurTokenLexer.reset(IncludeMacroStack.back().TheTokenLexer);
     CurDirLookup  = IncludeMacroStack.back().TheDirLookup;
     CurLexerKind = IncludeMacroStack.back().CurLexerKind;
+    CurIsSubmodule = IncludeMacroStack.back().IsSubmodule;
     IncludeMacroStack.pop_back();
   }
+
+  void PropagateLineStartLeadingSpaceInfo(Token &Result);
 
   /// \brief Allocate a new MacroInfo object.
   MacroInfo *AllocateMacroInfo();
@@ -1342,7 +1350,7 @@ private:
 
   /// HandleMacroExpandedIdentifier - If an identifier token is read that is to
   /// be expanded as a macro, handle it and return the next token as 'Tok'.  If
-  /// the macro should not be expanded return true, otherwise return false.
+  /// we lexed a token, return true; otherwise the caller should lex again.
   bool HandleMacroExpandedIdentifier(Token &Tok, MacroDirective *MD);
 
   /// \brief Cache macro expanded tokens for TokenLexers.
@@ -1381,11 +1389,13 @@ private:
 
   /// EnterSourceFileWithLexer - Add a lexer to the top of the include stack and
   /// start lexing tokens from it instead of the current buffer.
-  void EnterSourceFileWithLexer(Lexer *TheLexer, const DirectoryLookup *Dir);
+  void EnterSourceFileWithLexer(Lexer *TheLexer, const DirectoryLookup *Dir,
+                                bool IsSubmodule = false);
 
   /// EnterSourceFileWithPTH - Add a lexer to the top of the include stack and
   /// start getting tokens from it using the PTH cache.
-  void EnterSourceFileWithPTH(PTHLexer *PL, const DirectoryLookup *Dir);
+  void EnterSourceFileWithPTH(PTHLexer *PL, const DirectoryLookup *Dir,
+                              bool IsSubmodule = false);
 
   /// \brief Set the file ID for the preprocessor predefines.
   void setPredefinesFileID(FileID FID) {
@@ -1444,6 +1454,30 @@ private:
   void HandleIncludeMacrosDirective(SourceLocation HashLoc, Token &Tok);
   void HandleImportDirective(SourceLocation HashLoc, Token &Tok);
   void HandleMicrosoftImportDirective(Token &Tok);
+
+  // Module inclusion testing.
+  /// \brief Find the module for the source or header file that \p FilenameLoc
+  /// points to.
+  Module *getModuleForLocation(SourceLocation FilenameLoc);
+
+  /// \brief Verify that a private header is included only from within its
+  /// module.
+  bool violatesPrivateInclude(Module *RequestingModule,
+                              const FileEntry *IncFileEnt,
+                              ModuleMap::ModuleHeaderRole Role,
+                              Module *RequestedModule);
+
+  /// \brief Verify that a module includes headers only from modules that it
+  /// has declared that it uses.
+  bool violatesUseDeclarations(Module *RequestingModule,
+                               Module *RequestedModule);
+
+  /// \brief Verify that it is legal for the source file that \p FilenameLoc
+  /// points to to include the file \p Filename.
+  ///
+  /// Tries to reuse \p IncFileEnt.
+  void verifyModuleInclude(SourceLocation FilenameLoc, StringRef Filename,
+                           const FileEntry *IncFileEnt);
 
   // Macro handling.
   void HandleDefineDirective(Token &Tok, bool ImmediatelyAfterTopLevelIfndef);

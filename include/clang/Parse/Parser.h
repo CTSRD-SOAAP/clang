@@ -73,7 +73,7 @@ class Parser : public CodeCompletionHandler {
   SourceLocation PrevTokLocation;
 
   unsigned short ParenCount, BracketCount, BraceCount;
-  
+
   /// Actions - These are the callbacks we invoke as we parse various constructs
   /// in the file.
   Sema &Actions;
@@ -102,6 +102,7 @@ class Parser : public CodeCompletionHandler {
 
   /// Contextual keywords for Microsoft extensions.
   IdentifierInfo *Ident__except;
+  mutable IdentifierInfo *Ident_sealed;
 
   /// Ident_super - IdentifierInfo for "super", to support fast
   /// comparison.
@@ -407,6 +408,14 @@ private:
     Tok.setKind(tok::eof);
   }
 
+  /// \brief Determine if we're at the end of the file or at a transition
+  /// between modules.
+  bool isEofOrEom() {
+    tok::TokenKind Kind = Tok.getKind();
+    return Kind == tok::eof || Kind == tok::annot_module_begin ||
+           Kind == tok::annot_module_end || Kind == tok::annot_module_include;
+  }
+
   /// \brief Handle the annotation token produced for #pragma unused(...)
   void HandlePragmaUnused();
 
@@ -608,6 +617,7 @@ private:
       assert(!isActive && "Forgot to call Commit or Revert!");
     }
   };
+  class UnannotatedTentativeParsingAction;
 
   /// ObjCDeclContextSwitch - An object used to switch context from
   /// an objective-c decl context to its enclosing decl context and
@@ -734,32 +744,45 @@ private:
   void CheckNestedObjCContexts(SourceLocation AtLoc);
 
 public:
+
+  /// \brief Control flags for SkipUntil functions.
+  enum SkipUntilFlags {
+    StopAtSemi = 1 << 0,  ///< Stop skipping at semicolon
+    /// \brief Stop skipping at specified token, but don't skip the token itself
+    StopBeforeMatch = 1 << 1,
+    StopAtCodeCompletion = 1 << 2 ///< Stop at code completion
+  };
+
+  friend LLVM_CONSTEXPR SkipUntilFlags operator|(SkipUntilFlags L,
+                                                 SkipUntilFlags R) {
+    return static_cast<SkipUntilFlags>(static_cast<unsigned>(L) |
+                                       static_cast<unsigned>(R));
+  }
+
   /// SkipUntil - Read tokens until we get to the specified token, then consume
-  /// it (unless DontConsume is true).  Because we cannot guarantee that the
-  /// token will ever occur, this skips to the next token, or to some likely
-  /// good stopping point.  If StopAtSemi is true, skipping will stop at a ';'
-  /// character.
+  /// it (unless StopBeforeMatch is specified).  Because we cannot guarantee
+  /// that the token will ever occur, this skips to the next token, or to some
+  /// likely good stopping point.  If Flags has StopAtSemi flag, skipping will
+  /// stop at a ';' character.
   ///
   /// If SkipUntil finds the specified token, it returns true, otherwise it
   /// returns false.
-  bool SkipUntil(tok::TokenKind T, bool StopAtSemi = true,
-                 bool DontConsume = false, bool StopAtCodeCompletion = false) {
-    return SkipUntil(llvm::makeArrayRef(T), StopAtSemi, DontConsume,
-                     StopAtCodeCompletion);
+  bool SkipUntil(tok::TokenKind T,
+                 SkipUntilFlags Flags = static_cast<SkipUntilFlags>(0)) {
+    return SkipUntil(llvm::makeArrayRef(T), Flags);
   }
-  bool SkipUntil(tok::TokenKind T1, tok::TokenKind T2, bool StopAtSemi = true,
-                 bool DontConsume = false, bool StopAtCodeCompletion = false) {
+  bool SkipUntil(tok::TokenKind T1, tok::TokenKind T2,
+                 SkipUntilFlags Flags = static_cast<SkipUntilFlags>(0)) {
     tok::TokenKind TokArray[] = {T1, T2};
-    return SkipUntil(TokArray, StopAtSemi, DontConsume,StopAtCodeCompletion);
+    return SkipUntil(TokArray, Flags);
   }
   bool SkipUntil(tok::TokenKind T1, tok::TokenKind T2, tok::TokenKind T3,
-                 bool StopAtSemi = true, bool DontConsume = false,
-                 bool StopAtCodeCompletion = false) {
+                 SkipUntilFlags Flags = static_cast<SkipUntilFlags>(0)) {
     tok::TokenKind TokArray[] = {T1, T2, T3};
-    return SkipUntil(TokArray, StopAtSemi, DontConsume,StopAtCodeCompletion);
+    return SkipUntil(TokArray, Flags);
   }
-  bool SkipUntil(ArrayRef<tok::TokenKind> Toks, bool StopAtSemi = true,
-                 bool DontConsume = false, bool StopAtCodeCompletion = false);
+  bool SkipUntil(ArrayRef<tok::TokenKind> Toks,
+                 SkipUntilFlags Flags = static_cast<SkipUntilFlags>(0));
 
   /// SkipMalformedDecl - Read tokens until we get to some likely good stopping
   /// point for skipping past a simple-declaration.
@@ -1061,6 +1084,11 @@ private:
   void DeallocateParsedClasses(ParsingClass *Class);
   void PopParsingClass(Sema::ParsingClassState);
 
+  enum CachedInitKind {
+    CIK_DefaultArgument,
+    CIK_DefaultInitializer
+  };
+
   NamedDecl *ParseCXXInlineMethodDef(AccessSpecifier AS,
                                 AttributeList *AccessAttrs,
                                 ParsingDeclarator &D,
@@ -1082,6 +1110,8 @@ private:
   void ParseLexedMemberInitializer(LateParsedMemberInitializer &MI);
   void ParseLexedObjCMethodDefs(LexedMethod &LM, bool parseMethod);
   bool ConsumeAndStoreFunctionPrologue(CachedTokens &Toks);
+  bool ConsumeAndStoreInitializer(CachedTokens &Toks, CachedInitKind CIK);
+  bool ConsumeAndStoreConditional(CachedTokens &Toks);
   bool ConsumeAndStoreUntil(tok::TokenKind T1,
                             CachedTokens &Toks,
                             bool StopAtSemi = true,
@@ -1461,10 +1491,7 @@ private:
   /// A SmallVector of types.
   typedef SmallVector<ParsedType, 12> TypeVector;
 
-  StmtResult ParseStatement(SourceLocation *TrailingElseLoc = 0) {
-    StmtVector Stmts;
-    return ParseStatementOrDeclaration(Stmts, true, TrailingElseLoc);
-  }
+  StmtResult ParseStatement(SourceLocation *TrailingElseLoc = 0);
   StmtResult ParseStatementOrDeclaration(StmtVector &Stmts,
                                          bool OnlyStatement,
                                          SourceLocation *TrailingElseLoc = 0);
@@ -1628,6 +1655,9 @@ private:
                                   AccessSpecifier AS = AS_none,
                                   DeclSpecContext DSC = DSC_normal,
                                   LateParsedAttrList *LateAttrs = 0);
+  bool DiagnoseMissingSemiAfterTagDefinition(DeclSpec &DS, AccessSpecifier AS,
+                                             DeclSpecContext DSContext,
+                                             LateParsedAttrList *LateAttrs = 0);
 
   void ParseSpecifierQualifierList(DeclSpec &DS, AccessSpecifier AS = AS_none,
                                    DeclSpecContext DSC = DSC_normal);
@@ -1800,6 +1830,11 @@ private:
   isCXXDeclarationSpecifier(TPResult BracedCastResult = TPResult::False(),
                             bool *HasMissingTypename = 0);
 
+  /// Given that isCXXDeclarationSpecifier returns \c TPResult::True or
+  /// \c TPResult::Ambiguous, determine whether the decl-specifier would be
+  /// a type-specifier other than a cv-qualifier.
+  bool isCXXDeclarationSpecifierAType();
+
   /// \brief Determine whether an identifier has been tentatively declared as a
   /// non-type. Such tentative declarations should not be found to name a type
   /// during a tentative parse, but also should not be annotated as a non-type.
@@ -1812,15 +1847,18 @@ private:
   // that more tentative parsing is necessary for disambiguation.
   // They all consume tokens, so backtracking should be used after calling them.
 
-  TPResult TryParseDeclarationSpecifier(bool *HasMissingTypename = 0);
   TPResult TryParseSimpleDeclaration(bool AllowForRangeDecl);
   TPResult TryParseTypeofSpecifier();
   TPResult TryParseProtocolQualifiers();
+  TPResult TryParsePtrOperatorSeq();
+  TPResult TryParseOperatorId();
   TPResult TryParseInitDeclaratorList();
   TPResult TryParseDeclarator(bool mayBeAbstract, bool mayHaveIdentifier=true);
-  TPResult TryParseParameterDeclarationClause(bool *InvalidAsDeclaration = 0);
+  TPResult TryParseParameterDeclarationClause(bool *InvalidAsDeclaration = 0,
+                                              bool VersusTemplateArg = false);
   TPResult TryParseFunctionDeclarator();
   TPResult TryParseBracketDeclarator();
+  TPResult TryConsumeDeclarationSpecifier();
 
 public:
   TypeResult ParseTypeName(SourceRange *Range = 0,
@@ -1865,6 +1903,10 @@ private:
   // locations which standard permits but we don't supported yet, 
   // for example, attributes appertain to decl specifiers.
   void ProhibitCXX11Attributes(ParsedAttributesWithRange &attrs);
+
+  /// \brief Diagnose and skip C++11 attributes that appear in syntactic
+  /// locations where attributes are not allowed.
+  void DiagnoseAndSkipCXX11Attributes();
 
   void MaybeParseGNUAttributes(Declarator &D,
                                LateParsedAttrList *LateAttrs = 0) {
@@ -1962,6 +2004,11 @@ private:
                                         ParsedAttributes &Attrs,
                                         SourceLocation *EndLoc);
 
+  void ParseAttributeWithTypeArg(IdentifierInfo &AttrName,
+                                 SourceLocation AttrNameLoc,
+                                 ParsedAttributes &Attrs,
+                                 SourceLocation *EndLoc);
+
   void ParseTypeofSpecifier(DeclSpec &DS);
   SourceLocation ParseDecltypeSpecifier(DeclSpec &DS);
   void AnnotateExistingDecltypeSpecifier(const DeclSpec &DS,
@@ -2025,7 +2072,8 @@ private:
 
   void ParseTypeQualifierListOpt(DeclSpec &DS, bool GNUAttributesAllowed = true,
                                  bool CXX11AttributesAllowed = true,
-                                 bool AtomicAllowed = true);
+                                 bool AtomicAllowed = true,
+                                 bool IdentifierRequired = false);
   void ParseDirectDeclarator(Declarator &D);
   void ParseParenDeclarator(Declarator &D);
   void ParseFunctionDeclarator(Declarator &D,
@@ -2060,6 +2108,8 @@ private:
   CXX11AttributeKind
   isCXX11AttributeSpecifier(bool Disambiguate = false,
                             bool OuterMightBeMessageSend = false);
+
+  void DiagnoseUnexpectedNamespace(NamedDecl *Context);
 
   Decl *ParseNamespace(unsigned Context, SourceLocation &DeclEnd,
                        SourceLocation InlineLoc = SourceLocation());

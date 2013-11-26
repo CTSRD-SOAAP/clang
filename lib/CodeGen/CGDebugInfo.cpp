@@ -37,6 +37,7 @@
 #include "llvm/IR/Module.h"
 #include "llvm/Support/Dwarf.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
 using namespace clang;
 using namespace clang::CodeGen;
 
@@ -158,7 +159,7 @@ llvm::DIScope CGDebugInfo::getContextDescriptor(const Decl *Context) {
 }
 
 /// getFunctionName - Get function name for the given FunctionDecl. If the
-/// name is constructred on demand (e.g. C++ destructor) then the name
+/// name is constructed on demand (e.g. C++ destructor) then the name
 /// is stored on the side.
 StringRef CGDebugInfo::getFunctionName(const FunctionDecl *FD) {
   assert (FD && "Invalid FunctionDecl!");
@@ -184,10 +185,7 @@ StringRef CGDebugInfo::getFunctionName(const FunctionDecl *FD) {
   }
 
   // Copy this name on the side and use its reference.
-  OS.flush();
-  char *StrPtr = DebugInfoNames.Allocate<char>(NS.size());
-  memcpy(StrPtr, NS.data(), NS.size());
-  return StringRef(StrPtr, NS.size());
+  return internString(OS.str());
 }
 
 StringRef CGDebugInfo::getObjCMethodName(const ObjCMethodDecl *OMD) {
@@ -215,18 +213,13 @@ StringRef CGDebugInfo::getObjCMethodName(const ObjCMethodDecl *OMD) {
   }
   OS << ' ' << OMD->getSelector().getAsString() << ']';
 
-  char *StrPtr = DebugInfoNames.Allocate<char>(OS.tell());
-  memcpy(StrPtr, MethodName.begin(), OS.tell());
-  return StringRef(StrPtr, OS.tell());
+  return internString(OS.str());
 }
 
 /// getSelectorName - Return selector name. This is used for debugging
 /// info.
 StringRef CGDebugInfo::getSelectorName(Selector S) {
-  const std::string &SName = S.getAsString();
-  char *StrPtr = DebugInfoNames.Allocate<char>(SName.size());
-  memcpy(StrPtr, SName.data(), SName.size());
-  return StringRef(StrPtr, SName.size());
+  return internString(S.getAsString());
 }
 
 /// getClassName - Get class name including template argument list.
@@ -259,11 +252,7 @@ CGDebugInfo::getClassName(const RecordDecl *RD) {
   }
 
   // Copy this name on the side and use its reference.
-  size_t Length = Name.size() + TemplateArgList.size();
-  char *StrPtr = DebugInfoNames.Allocate<char>(Length);
-  memcpy(StrPtr, Name.data(), Name.size());
-  memcpy(StrPtr + Name.size(), TemplateArgList.data(), TemplateArgList.size());
-  return StringRef(StrPtr, Length);
+  return internString(Name, TemplateArgList);
 }
 
 /// getOrCreateFile - Get the file debug info descriptor for the input location.
@@ -333,9 +322,7 @@ StringRef CGDebugInfo::getCurrentDirname() {
     return CWDName;
   SmallString<256> CWD;
   llvm::sys::fs::current_path(CWD);
-  char *CompDirnamePtr = DebugInfoNames.Allocate<char>(CWD.size());
-  memcpy(CompDirnamePtr, CWD.data(), CWD.size());
-  return CWDName = StringRef(CompDirnamePtr, CWD.size());
+  return CWDName = internString(CWD);
 }
 
 /// CreateCompileUnit - Create new compile unit.
@@ -354,20 +341,19 @@ void CGDebugInfo::CreateCompileUnit() {
   std::string MainFileDir;
   if (const FileEntry *MainFile = SM.getFileEntryForID(SM.getMainFileID())) {
     MainFileDir = MainFile->getDir()->getName();
-    if (MainFileDir != ".")
-      MainFileName = MainFileDir + "/" + MainFileName;
+    if (MainFileDir != ".") {
+      llvm::SmallString<1024> MainFileDirSS(MainFileDir);
+      llvm::sys::path::append(MainFileDirSS, MainFileName);
+      MainFileName = MainFileDirSS.str();
+    }
   }
 
   // Save filename string.
-  char *FilenamePtr = DebugInfoNames.Allocate<char>(MainFileName.length());
-  memcpy(FilenamePtr, MainFileName.c_str(), MainFileName.length());
-  StringRef Filename(FilenamePtr, MainFileName.length());
+  StringRef Filename = internString(MainFileName);
 
   // Save split dwarf file string.
   std::string SplitDwarfFile = CGM.getCodeGenOpts().SplitDwarfFile;
-  char *SplitDwarfPtr = DebugInfoNames.Allocate<char>(SplitDwarfFile.length());
-  memcpy(SplitDwarfPtr, SplitDwarfFile.c_str(), SplitDwarfFile.length());
-  StringRef SplitDwarfFilename(SplitDwarfPtr, SplitDwarfFile.length());
+  StringRef SplitDwarfFilename = internString(SplitDwarfFile);
 
   unsigned LangTag;
   const LangOptions &LO = CGM.getLangOpts();
@@ -788,7 +774,7 @@ llvm::DIType CGDebugInfo::createFieldType(StringRef name,
                                           AccessSpecifier AS,
                                           uint64_t offsetInBits,
                                           llvm::DIFile tunit,
-                                          llvm::DIDescriptor scope) {
+                                          llvm::DIScope scope) {
   llvm::DIType debugType = getOrCreateType(type, tunit);
 
   // Get the location for the field.
@@ -1071,8 +1057,12 @@ CGDebugInfo::CreateCXXMemberFunction(const CXXMethodDecl *Method,
 
     // It doesn't make sense to give a virtual destructor a vtable index,
     // since a single destructor has two entries in the vtable.
-    if (!isa<CXXDestructorDecl>(Method))
-      VIndex = CGM.getVTableContext().getMethodVTableIndex(Method);
+    // FIXME: Add proper support for debug info for virtual calls in
+    // the Microsoft ABI, where we may use multiple vptrs to make a vftable
+    // lookup if we have multiple or virtual inheritance.
+    if (!isa<CXXDestructorDecl>(Method) &&
+        !CGM.getTarget().getCXXABI().isMicrosoft())
+      VIndex = CGM.getItaniumVTableContext().getMethodVTableIndex(Method);
     ContainingType = RecordTy;
   }
 
@@ -1157,23 +1147,6 @@ CollectCXXMemberFunctions(const CXXRecordDecl *RD, llvm::DIFile Unit,
   }
 }
 
-/// CollectCXXFriends - A helper function to collect debug info for
-/// C++ base classes. This is used while creating debug info entry for
-/// a Record.
-void CGDebugInfo::
-CollectCXXFriends(const CXXRecordDecl *RD, llvm::DIFile Unit,
-                SmallVectorImpl<llvm::Value *> &EltTys,
-                llvm::DIType RecordTy) {
-  for (CXXRecordDecl::friend_iterator BI = RD->friend_begin(),
-         BE = RD->friend_end(); BI != BE; ++BI) {
-    if ((*BI)->isUnsupportedFriend())
-      continue;
-    if (TypeSourceInfo *TInfo = (*BI)->getFriendType())
-      EltTys.push_back(DBuilder.createFriend(
-          RecordTy, getOrCreateType(TInfo->getType(), Unit)));
-  }
-}
-
 /// CollectCXXBases - A helper function to collect debug info for
 /// C++ base classes. This is used while creating debug info entry for
 /// a Record.
@@ -1195,7 +1168,7 @@ CollectCXXBases(const CXXRecordDecl *RD, llvm::DIFile Unit,
       // virtual base offset offset is -ve. The code generator emits dwarf
       // expression where it expects +ve number.
       BaseOffset =
-        0 - CGM.getVTableContext()
+        0 - CGM.getItaniumVTableContext()
                .getVirtualBaseOffsetOffset(RD, Base).getQuantity();
       BFlags = llvm::DIDescriptor::FlagVirtual;
     } else
@@ -1389,13 +1362,8 @@ llvm::DIType CGDebugInfo::getOrCreateVTablePtrType(llvm::DIFile Unit) {
 
 /// getVTableName - Get vtable name for the given Class.
 StringRef CGDebugInfo::getVTableName(const CXXRecordDecl *RD) {
-  // Construct gdb compatible name name.
-  std::string Name = "_vptr$" + RD->getNameAsString();
-
-  // Copy this name on the side and use its reference.
-  char *StrPtr = DebugInfoNames.Allocate<char>(Name.length());
-  memcpy(StrPtr, Name.data(), Name.length());
-  return StringRef(StrPtr, Name.length());
+  // Copy the gdb compatible name on the side and use its reference.
+  return internString("_vptr$", RD->getNameAsString());
 }
 
 
@@ -1549,10 +1517,8 @@ llvm::DIType CGDebugInfo::CreateTypeDefinition(const RecordType *Ty) {
 
   // Collect data fields (including static variables and any initializers).
   CollectRecordFields(RD, DefUnit, EltTys, FwdDecl);
-  if (CXXDecl) {
+  if (CXXDecl)
     CollectCXXMemberFunctions(CXXDecl, DefUnit, EltTys, FwdDecl);
-    CollectCXXFriends(CXXDecl, DefUnit, EltTys, FwdDecl);
-  }
 
   LexicalBlockStack.pop_back();
   RegionMap.erase(Ty->getDecl());
@@ -1932,7 +1898,11 @@ llvm::DIType CGDebugInfo::CreateEnumType(const EnumType *Ty) {
 static QualType UnwrapTypeForDebugInfo(QualType T, const ASTContext &C) {
   Qualifiers Quals;
   do {
-    Quals += T.getLocalQualifiers();
+    Qualifiers InnerQuals = T.getLocalQualifiers();
+    // Qualifiers::operator+() doesn't like it if you add a Qualifier
+    // that is already there.
+    Quals += Qualifiers::removeCommonQualifiers(Quals, InnerQuals);
+    Quals += InnerQuals;
     QualType LastT = T;
     switch (T->getTypeClass()) {
     default:
@@ -2247,8 +2217,8 @@ llvm::DICompositeType CGDebugInfo::CreateLimitedType(const RecordType *Ty) {
   unsigned Line = getLineNumber(RD->getLocation());
   StringRef RDName = getClassName(RD);
 
-  llvm::DIDescriptor RDContext;
-  RDContext = getContextDescriptor(cast<Decl>(RD->getDeclContext()));
+  llvm::DIDescriptor RDContext =
+      getContextDescriptor(cast<Decl>(RD->getDeclContext()));
 
   // If we ended up creating the type during the context chain construction,
   // just return that.
@@ -2288,7 +2258,8 @@ llvm::DICompositeType CGDebugInfo::CreateLimitedType(const RecordType *Ty) {
   } else
     RealDecl = DBuilder.createStructType(RDContext, RDName, DefUnit, Line,
                                          Size, Align, 0, llvm::DIType(),
-                                         llvm::DIArray(), 0, 0, FullName);
+                                         llvm::DIArray(), 0, llvm::DIType(),
+                                         FullName);
 
   RegionMap[Ty->getDecl()] = llvm::WeakVH(RealDecl);
   TypeCache[QualType(Ty, 0).getAsOpaquePtr()] = RealDecl;
@@ -2509,11 +2480,11 @@ void CGDebugInfo::EmitFunctionStart(GlobalDecl GD, QualType FnType,
 
     if (DebugKind >= CodeGenOptions::LimitedDebugInfo) {
       if (const NamespaceDecl *NSDecl =
-          dyn_cast_or_null<NamespaceDecl>(FD->getDeclContext()))
+              dyn_cast_or_null<NamespaceDecl>(FD->getDeclContext()))
         FDContext = getOrCreateNameSpace(NSDecl);
       else if (const RecordDecl *RDecl =
-               dyn_cast_or_null<RecordDecl>(FD->getDeclContext()))
-        FDContext = getContextDescriptor(cast<Decl>(RDecl->getDeclContext()));
+                   dyn_cast_or_null<RecordDecl>(FD->getDeclContext()))
+        FDContext = getContextDescriptor(cast<Decl>(RDecl));
 
       // Collect template parameters.
       TParamsArray = CollectFunctionTemplateParams(FD, Unit);
@@ -2533,11 +2504,13 @@ void CGDebugInfo::EmitFunctionStart(GlobalDecl GD, QualType FnType,
   if (!HasDecl || D->isImplicit())
     Flags |= llvm::DIDescriptor::FlagArtificial;
 
-  llvm::DISubprogram SP = DBuilder.createFunction(
-      FDContext, Name, LinkageName, Unit, LineNo,
-      getOrCreateFunctionType(D, FnType, Unit), Fn->hasInternalLinkage(),
-      true /*definition*/, getLineNumber(CurLoc), Flags,
-      CGM.getLangOpts().Optimize, Fn, TParamsArray, getFunctionDeclaration(D));
+  llvm::DISubprogram SP =
+      DBuilder.createFunction(FDContext, Name, LinkageName, Unit, LineNo,
+                              getOrCreateFunctionType(D, FnType, Unit),
+                              Fn->hasInternalLinkage(), true /*definition*/,
+                              getLineNumber(CurLoc), Flags,
+                              CGM.getLangOpts().Optimize, Fn, TParamsArray,
+                              getFunctionDeclaration(D));
   if (HasDecl)
     DeclCache.insert(std::make_pair(D->getCanonicalDecl(), llvm::WeakVH(SP)));
 
@@ -2788,7 +2761,8 @@ void CGDebugInfo::EmitDeclare(const VarDecl *VD, unsigned Tag,
         DBuilder.insertDeclare(Storage, D, Builder.GetInsertBlock());
       Call->setDebugLoc(llvm::DebugLoc::get(Line, Column, Scope));
       return;
-    }
+    } else if (isa<VariableArrayType>(VD->getType()))
+      Flags |= llvm::DIDescriptor::FlagIndirectVariable;
   } else if (const RecordType *RT = dyn_cast<RecordType>(VD->getType())) {
     // If VD is an anonymous union then Storage represents value for
     // all union fields.

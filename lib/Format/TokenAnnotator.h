@@ -41,8 +41,14 @@ public:
       : First(Line.Tokens.front().Tok), Level(Line.Level),
         InPPDirective(Line.InPPDirective),
         MustBeDeclaration(Line.MustBeDeclaration), MightBeFunctionDecl(false),
-        StartsDefinition(false) {
+        StartsDefinition(false), Affected(false),
+        LeadingEmptyLinesAffected(false) {
     assert(!Line.Tokens.empty());
+
+    // Calculate Next and Previous for all tokens. Note that we must overwrite
+    // Next and Previous for every token, as previous formatting runs might have
+    // left them in a different state.
+    First->Previous = NULL;
     FormatToken *Current = First;
     for (std::list<UnwrappedLineNode>::const_iterator I = ++Line.Tokens.begin(),
                                                       E = Line.Tokens.end();
@@ -51,6 +57,7 @@ public:
       Current->Next = I->Tok;
       I->Tok->Previous = Current;
       Current = Current->Next;
+      Current->Children.clear();
       for (SmallVectorImpl<UnwrappedLine>::const_iterator
                I = Node.Children.begin(),
                E = Node.Children.end();
@@ -60,6 +67,7 @@ public:
       }
     }
     Last = Current;
+    Last->Next = NULL;
   }
 
   ~AnnotatedLine() {
@@ -79,6 +87,14 @@ public:
   bool MustBeDeclaration;
   bool MightBeFunctionDecl;
   bool StartsDefinition;
+
+  /// \c True if this line should be formatted, i.e. intersects directly or
+  /// indirectly with one of the input ranges.
+  bool Affected;
+
+  /// \c True if the leading empty lines of this line intersect with one of the
+  /// input ranges.
+  bool LeadingEmptyLinesAffected;
 
 private:
   // Disallow copying.
@@ -103,12 +119,15 @@ public:
 
 private:
   /// \brief Calculate the penalty for splitting before \c Tok.
-  unsigned splitPenalty(const AnnotatedLine &Line, const FormatToken &Tok);
+  unsigned splitPenalty(const AnnotatedLine &Line, const FormatToken &Tok,
+                        bool InFunctionDecl);
 
   bool spaceRequiredBetween(const AnnotatedLine &Line, const FormatToken &Left,
                             const FormatToken &Right);
 
   bool spaceRequiredBefore(const AnnotatedLine &Line, const FormatToken &Tok);
+
+  bool mustBreakBefore(const AnnotatedLine &Line, const FormatToken &Right);
 
   bool canBreakBefore(const AnnotatedLine &Line, const FormatToken &Right);
 
