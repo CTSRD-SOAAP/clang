@@ -490,8 +490,6 @@ public:
           const llvm::opt::ArgList &Args);
   virtual bool HasNativeLLVMSupport() const;
 
-  virtual CXXStdlibType GetCXXStdlibType(const llvm::opt::ArgList &Args) const;
-
   virtual bool IsMathErrnoDefault() const { return false; }
   virtual bool IsObjCNonFragileABIDefault() const { return true; }
 
