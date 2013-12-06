@@ -82,23 +82,26 @@ void CodeGenFunction::addSoaapVTableMetadata(llvm::CallInst* C, CXXRecordDecl* R
   StringRef mangledClassName = Out.str();
   std::string mangledVTableName = mangledClassName.str().replace(0,2,"_ZTV");
   std::size_t anonNsFound = mangledVTableName.find("_GLOBAL__N_1");
+
+  // this will force the vtable definition to be generated even if the vtable is never used
+  CGM.getCXXABI().getAddrOfVTable(RD, CharUnits());
+
+  std::stringstream ss;
+  llvm::MDNode* Node;
   if (anonNsFound != std::string::npos) {
     // vtable var will be defined in this Module, as anonymous classes cannot be 
     // resolved outside of this compilation unit
     llvm::GlobalVariable* vtableVar = CGM.getCXXABI().getAddrOfVTable(RD, CharUnits());
-    llvm::MDNode* Node = llvm::MDNode::get(getLLVMContext(), vtableVar);
-    std::stringstream ss;
+    Node = llvm::MDNode::get(getLLVMContext(), vtableVar);
     ss << "soaap_" << desc << "_vtable_var";
-    C->setMetadata(ss.str(), Node);
   }
   else {
-    std::stringstream ss;
-    ss << "soaap_" << desc << "_vtable_name";
     // do not add terminating NULL, otherwise we won't be able to find the vtable global var later
     llvm::Constant* vtableNameConstant = llvm::ConstantDataArray::getString(getLLVMContext(), mangledVTableName, false); 
-    llvm::MDNode* Node = llvm::MDNode::get(getLLVMContext(), vtableNameConstant);
-    C->setMetadata(ss.str(), Node);
+    Node = llvm::MDNode::get(getLLVMContext(), vtableNameConstant);
+    ss << "soaap_" << desc << "_vtable_name";
   }
+  C->setMetadata(ss.str(), Node);
 }
 
 // Note: This function also emit constructor calls to support a MSVC
