@@ -1141,7 +1141,7 @@ static int64_t getExtValue(const APSInt &Value) {
 
 /// Should this call expression be treated as a string literal?
 static bool IsStringLiteralCall(const CallExpr *E) {
-  unsigned Builtin = E->isBuiltinCall();
+  unsigned Builtin = E->getBuiltinCallee();
   return (Builtin == Builtin::BI__builtin___CFStringMakeConstantString ||
           Builtin == Builtin::BI__builtin___NSStringMakeConstantString);
 }
@@ -3900,7 +3900,7 @@ public:
     // for discussion.
     if (const CallExpr *CallCE =
           dyn_cast<CallExpr>(E->getCond()->IgnoreParenCasts()))
-      if (CallCE->isBuiltinCall() == Builtin::BI__builtin_constant_p)
+      if (CallCE->getBuiltinCallee() == Builtin::BI__builtin_constant_p)
         IsBcpCall = true;
 
     // Always assume __builtin_constant_p(...) ? ... : ... is a potential
@@ -4769,7 +4769,7 @@ bool PointerExprEvaluator::VisitCallExpr(const CallExpr *E) {
   if (IsStringLiteralCall(E))
     return Success(E);
 
-  switch (E->isBuiltinCall()) {
+  switch (E->getBuiltinCallee()) {
   case Builtin::BI__builtin_addressof:
     return EvaluateLValue(E->getArg(0), Result, Info);
 
@@ -5731,10 +5731,6 @@ public:
     return Success(E->getValue(), E);
   }
 
-  bool VisitBinaryTypeTraitExpr(const BinaryTypeTraitExpr *E) {
-    return Success(E->getValue(), E);
-  }
-
   bool VisitTypeTraitExpr(const TypeTraitExpr *E) {
     return Success(E->getValue(), E);
   }
@@ -5975,7 +5971,7 @@ bool IntExprEvaluator::TryEvaluateBuiltinObjectSize(const CallExpr *E) {
 }
 
 bool IntExprEvaluator::VisitCallExpr(const CallExpr *E) {
-  switch (unsigned BuiltinOp = E->isBuiltinCall()) {
+  switch (unsigned BuiltinOp = E->getBuiltinCallee()) {
   default:
     return ExprEvaluatorBaseTy::VisitCallExpr(E);
 
@@ -7120,6 +7116,7 @@ bool IntExprEvaluator::VisitCastExpr(const CastExpr *E) {
   case CK_BuiltinFnToFnPtr:
   case CK_ZeroToOCLEvent:
   case CK_NonAtomicToAtomic:
+  case CK_AddressSpaceConversion:
     llvm_unreachable("invalid cast kind for integral value");
 
   case CK_BitCast:
@@ -7319,7 +7316,7 @@ static bool TryEvaluateBuiltinNaN(const ASTContext &Context,
 }
 
 bool FloatExprEvaluator::VisitCallExpr(const CallExpr *E) {
-  switch (E->isBuiltinCall()) {
+  switch (E->getBuiltinCallee()) {
   default:
     return ExprEvaluatorBaseTy::VisitCallExpr(E);
 
@@ -7592,6 +7589,7 @@ bool ComplexExprEvaluator::VisitCastExpr(const CastExpr *E) {
   case CK_BuiltinFnToFnPtr:
   case CK_ZeroToOCLEvent:
   case CK_NonAtomicToAtomic:
+  case CK_AddressSpaceConversion:
     llvm_unreachable("invalid cast kind for complex value");
 
   case CK_LValueToRValue:
@@ -8326,7 +8324,6 @@ static ICEDiag CheckICE(const Expr* E, const ASTContext &Ctx) {
   case Expr::CXXBoolLiteralExprClass:
   case Expr::CXXScalarValueInitExprClass:
   case Expr::UnaryTypeTraitExprClass:
-  case Expr::BinaryTypeTraitExprClass:
   case Expr::TypeTraitExprClass:
   case Expr::ArrayTypeTraitExprClass:
   case Expr::ExpressionTraitExprClass:
@@ -8338,7 +8335,7 @@ static ICEDiag CheckICE(const Expr* E, const ASTContext &Ctx) {
     // constant expressions, but they can never be ICEs because an ICE cannot
     // contain an operand of (pointer to) function type.
     const CallExpr *CE = cast<CallExpr>(E);
-    if (CE->isBuiltinCall())
+    if (CE->getBuiltinCallee())
       return CheckEvalInICE(E, Ctx);
     return ICEDiag(IK_NotICE, E->getLocStart());
   }
@@ -8555,7 +8552,7 @@ static ICEDiag CheckICE(const Expr* E, const ASTContext &Ctx) {
     // extension.  See GCC PR38377 for discussion.
     if (const CallExpr *CallCE
         = dyn_cast<CallExpr>(Exp->getCond()->IgnoreParenCasts()))
-      if (CallCE->isBuiltinCall() == Builtin::BI__builtin_constant_p)
+      if (CallCE->getBuiltinCallee() == Builtin::BI__builtin_constant_p)
         return CheckEvalInICE(E, Ctx);
     ICEDiag CondResult = CheckICE(Exp->getCond(), Ctx);
     if (CondResult.Kind == IK_NotICE)

@@ -69,9 +69,7 @@ NamedDecl *Parser::ParseCXXInlineMethodDef(AccessSpecifier AS,
 
   D.complete(FnD);
 
-  if (Tok.is(tok::equal)) {
-    ConsumeToken();
-
+  if (TryConsumeToken(tok::equal)) {
     if (!FnD) {
       SkipUntil(tok::semi);
       return 0;
@@ -79,20 +77,16 @@ NamedDecl *Parser::ParseCXXInlineMethodDef(AccessSpecifier AS,
 
     bool Delete = false;
     SourceLocation KWLoc;
-    if (Tok.is(tok::kw_delete)) {
-      Diag(Tok, getLangOpts().CPlusPlus11 ?
-           diag::warn_cxx98_compat_deleted_function :
-           diag::ext_deleted_function);
-
-      KWLoc = ConsumeToken();
+    if (TryConsumeToken(tok::kw_delete, KWLoc)) {
+      Diag(KWLoc, getLangOpts().CPlusPlus11
+                      ? diag::warn_cxx98_compat_deleted_function
+                      : diag::ext_deleted_function);
       Actions.SetDeclDeleted(FnD, KWLoc);
       Delete = true;
-    } else if (Tok.is(tok::kw_default)) {
-      Diag(Tok, getLangOpts().CPlusPlus11 ?
-           diag::warn_cxx98_compat_defaulted_function :
-           diag::ext_defaulted_function);
-
-      KWLoc = ConsumeToken();
+    } else if (TryConsumeToken(tok::kw_default, KWLoc)) {
+      Diag(KWLoc, getLangOpts().CPlusPlus11
+                      ? diag::warn_cxx98_compat_defaulted_function
+                      : diag::ext_defaulted_function);
       Actions.SetDeclDefaulted(FnD, KWLoc);
     } else {
       llvm_unreachable("function definition after = not 'delete' or 'default'");
@@ -348,9 +342,7 @@ void Parser::ParseLexedMethodDeclaration(LateParsedMethodDeclaration &LM) {
       if (DefArgResult.isInvalid())
         Actions.ActOnParamDefaultArgumentError(LM.DefaultArgs[I].Param);
       else {
-        if (Tok.is(tok::cxx_defaultarg_end))
-          ConsumeToken();
-        else {
+        if (!TryConsumeToken(tok::cxx_defaultarg_end)) {
           // The last two tokens are the terminator and the saved value of
           // Tok; the last token in the default argument is the one before
           // those.
@@ -678,7 +670,7 @@ bool Parser::ConsumeAndStoreFunctionPrologue(CachedTokens &Toks) {
                          /*StopAtSemi=*/true,
                          /*ConsumeFinalToken=*/false);
     if (Tok.isNot(tok::l_brace))
-      return Diag(Tok.getLocation(), diag::err_expected_lbrace);
+      return Diag(Tok.getLocation(), diag::err_expected) << tok::l_brace;
 
     Toks.push_back(Tok);
     ConsumeBrace();
@@ -711,8 +703,8 @@ bool Parser::ConsumeAndStoreFunctionPrologue(CachedTokens &Toks) {
       Toks.push_back(Tok);
       ConsumeParen();
       if (!ConsumeAndStoreUntil(tok::r_paren, Toks, /*StopAtSemi=*/true)) {
-        Diag(Tok.getLocation(), diag::err_expected_rparen);
-        Diag(OpenLoc, diag::note_matching) << "(";
+        Diag(Tok.getLocation(), diag::err_expected) << tok::r_paren;
+        Diag(OpenLoc, diag::note_matching) << tok::l_paren;
         return true;
       }
     }
@@ -759,13 +751,15 @@ bool Parser::ConsumeAndStoreFunctionPrologue(CachedTokens &Toks) {
                                 /*ConsumeFinalToken=*/false)) {
         // We're not just missing the initializer, we're also missing the
         // function body!
-        return Diag(Tok.getLocation(), diag::err_expected_lbrace);
+        return Diag(Tok.getLocation(), diag::err_expected) << tok::l_brace;
       }
     } else if (Tok.isNot(tok::l_paren) && Tok.isNot(tok::l_brace)) {
       // We found something weird in a mem-initializer-id.
-      return Diag(Tok.getLocation(), getLangOpts().CPlusPlus11
-                                         ? diag::err_expected_lparen_or_lbrace
-                                         : diag::err_expected_lparen);
+      if (getLangOpts().CPlusPlus11)
+        return Diag(Tok.getLocation(), diag::err_expected_either)
+               << tok::l_paren << tok::l_brace;
+      else
+        return Diag(Tok.getLocation(), diag::err_expected) << tok::l_paren;
     }
 
     tok::TokenKind kind = Tok.getKind();
@@ -787,11 +781,10 @@ bool Parser::ConsumeAndStoreFunctionPrologue(CachedTokens &Toks) {
     // Grab the initializer (or the subexpression of the template argument).
     // FIXME: If we support lambdas here, we'll need to set StopAtSemi to false
     //        if we might be inside the braces of a lambda-expression.
-    if (!ConsumeAndStoreUntil(IsLParen ? tok::r_paren : tok::r_brace,
-                              Toks, /*StopAtSemi=*/true)) {
-      Diag(Tok, IsLParen ? diag::err_expected_rparen :
-                           diag::err_expected_rbrace);
-      Diag(OpenLoc, diag::note_matching) << (IsLParen ? "(" : "{");
+    tok::TokenKind CloseKind = IsLParen ? tok::r_paren : tok::r_brace;
+    if (!ConsumeAndStoreUntil(CloseKind, Toks, /*StopAtSemi=*/true)) {
+      Diag(Tok, diag::err_expected) << CloseKind;
+      Diag(OpenLoc, diag::note_matching) << kind;
       return true;
     }
 
@@ -825,7 +818,8 @@ bool Parser::ConsumeAndStoreFunctionPrologue(CachedTokens &Toks) {
       ConsumeBrace();
       return false;
     } else if (!MightBeTemplateArgument) {
-      return Diag(Tok.getLocation(), diag::err_expected_lbrace_or_comma);
+      return Diag(Tok.getLocation(), diag::err_expected_either) << tok::l_brace
+                                                                << tok::comma;
     }
   }
 }

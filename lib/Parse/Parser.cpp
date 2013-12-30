@@ -195,8 +195,11 @@ bool Parser::ExpectAndConsume(tok::TokenKind ExpectedTok, unsigned DiagID,
 }
 
 bool Parser::ExpectAndConsumeSemi(unsigned DiagID) {
-  if (Tok.is(tok::semi) || Tok.is(tok::code_completion)) {
-    ConsumeToken();
+  if (TryConsumeToken(tok::semi))
+    return false;
+
+  if (Tok.is(tok::code_completion)) {
+    handleUnexpectedCodeCompletionToken();
     return false;
   }
   
@@ -298,6 +301,8 @@ bool Parser::SkipUntil(ArrayRef<tok::TokenKind> Toks, SkipUntilFlags Flags) {
       // Ran out of tokens.
       return false;
 
+    case tok::annot_pragma_openmp_end:
+      // Stop before an OpenMP pragma boundary.
     case tok::annot_module_begin:
     case tok::annot_module_end:
     case tok::annot_module_include:
@@ -308,7 +313,7 @@ bool Parser::SkipUntil(ArrayRef<tok::TokenKind> Toks, SkipUntilFlags Flags) {
 
     case tok::code_completion:
       if (!HasFlagsSet(Flags, StopAtCodeCompletion))
-        ConsumeToken();
+        handleUnexpectedCodeCompletionToken();
       return false;
         
     case tok::l_paren:
@@ -1354,16 +1359,15 @@ Parser::ExprResult Parser::ParseSimpleAsm(SourceLocation *EndLoc) {
 
   ExprResult Result(ParseAsmStringLiteral());
 
-  if (Result.isInvalid()) {
-    SkipUntil(tok::r_paren, StopAtSemi | StopBeforeMatch);
-    if (EndLoc)
-      *EndLoc = Tok.getLocation();
-    ConsumeAnyToken();
-  } else {
+  if (!Result.isInvalid()) {
     // Close the paren and get the location of the end bracket
     T.consumeClose();
     if (EndLoc)
       *EndLoc = T.getCloseLocation();
+  } else if (SkipUntil(tok::r_paren, StopAtSemi | StopBeforeMatch)) {
+    if (EndLoc)
+      *EndLoc = Tok.getLocation();
+    ConsumeParen();
   }
 
   return Result;
@@ -1444,8 +1448,8 @@ Parser::TryAnnotateName(bool IsAddressOfOperand,
 
   // Look up and classify the identifier. We don't perform any typo-correction
   // after a scope specifier, because in general we can't recover from typos
-  // there (eg, after correcting 'A::tempalte B<X>::C', we would need to jump
-  // back into scope specifier parsing).
+  // there (eg, after correcting 'A::tempalte B<X>::C' [sic], we would need to
+  // jump back into scope specifier parsing).
   Sema::NameClassification Classification
     = Actions.ClassifyName(getCurScope(), SS, Name, NameLoc, Next,
                            IsAddressOfOperand, SS.isEmpty() ? CCC : 0);
@@ -1515,6 +1519,35 @@ Parser::TryAnnotateName(bool IsAddressOfOperand,
   if (SS.isNotEmpty())
     AnnotateScopeToken(SS, !WasScopeAnnotation);
   return ANK_Unresolved;
+}
+
+bool Parser::TryKeywordIdentFallback(bool DisableKeyword) {
+  assert(!Tok.is(tok::identifier) && !Tok.isAnnotation());
+  Diag(Tok, diag::ext_keyword_as_ident)
+    << PP.getSpelling(Tok)
+    << DisableKeyword;
+  if (DisableKeyword) {
+    IdentifierInfo *II = Tok.getIdentifierInfo();
+    ContextualKeywords[II] = Tok.getKind();
+    II->RevertTokenIDToIdentifier();
+  }
+  Tok.setKind(tok::identifier);
+  return true;
+}
+
+bool Parser::TryIdentKeywordUpgrade() {
+  assert(Tok.is(tok::identifier));
+  const IdentifierInfo *II = Tok.getIdentifierInfo();
+  assert(II->hasRevertedTokenIDToIdentifier());
+  // If we find that this is in fact the name of a type trait,
+  // update the token kind in place and parse again to treat it as
+  // the appropriate kind of type trait.
+  llvm::SmallDenseMap<const IdentifierInfo *, tok::TokenKind>::iterator Known =
+      ContextualKeywords.find(II);
+  if (Known == ContextualKeywords.end())
+    return false;
+  Tok.setKind(Known->second);
+  return true;
 }
 
 /// TryAnnotateTypeOrScopeToken - If the current token position is on a
@@ -1604,7 +1637,8 @@ bool Parser::TryAnnotateTypeOrScopeToken(bool EnteringContext, bool NeedType) {
                                      Tok.getLocation());
     } else if (Tok.is(tok::annot_template_id)) {
       TemplateIdAnnotation *TemplateId = takeTemplateIdAnnotation(Tok);
-      if (TemplateId->Kind == TNK_Function_template) {
+      if (TemplateId->Kind != TNK_Type_template &&
+          TemplateId->Kind != TNK_Dependent_template_name) {
         Diag(Tok, diag::err_typename_refers_to_non_type_template)
           << Tok.getAnnotationRange();
         return true;
@@ -1728,8 +1762,7 @@ bool Parser::TryAnnotateTypeOrScopeTokenAfterScopeSpec(bool EnteringContext,
       // annotation token to a type annotation token now.
       AnnotateTemplateIdTokenAsType();
       return false;
-    } else if (TemplateId->Kind == TNK_Var_template)
-      return false;
+    }
   }
 
   if (SS.isEmpty())
@@ -1783,8 +1816,8 @@ bool Parser::isTokenEqualOrEqualTypo() {
   case tok::pipeequal:           // |=
   case tok::equalequal:          // ==
     Diag(Tok, diag::err_invalid_token_after_declarator_suggest_equal)
-      << getTokenSimpleSpelling(Kind)
-      << FixItHint::CreateReplacement(SourceRange(Tok.getLocation()), "=");
+        << Kind
+        << FixItHint::CreateReplacement(SourceRange(Tok.getLocation()), "=");
   case tok::equal:
     return true;
   }
@@ -1913,7 +1946,7 @@ void Parser::ParseMicrosoftIfExistsExternalDeclaration() {
   
   BalancedDelimiterTracker Braces(*this, tok::l_brace);
   if (Braces.consumeOpen()) {
-    Diag(Tok, diag::err_expected_lbrace);
+    Diag(Tok, diag::err_expected) << tok::l_brace;
     return;
   }
 
@@ -2014,17 +2047,9 @@ bool BalancedDelimiterTracker::expectAndConsume(unsigned DiagID,
 
 bool BalancedDelimiterTracker::diagnoseMissingClose() {
   assert(!P.Tok.is(Close) && "Should have consumed closing delimiter");
-  
-  const char *LHSName = "unknown";
-  diag::kind DID;
-  switch (Close) {
-  default: llvm_unreachable("Unexpected balanced token");
-  case tok::r_paren : LHSName = "("; DID = diag::err_expected_rparen; break;
-  case tok::r_brace : LHSName = "{"; DID = diag::err_expected_rbrace; break;
-  case tok::r_square: LHSName = "["; DID = diag::err_expected_rsquare; break;
-  }
-  P.Diag(P.Tok, DID);
-  P.Diag(LOpen, diag::note_matching) << LHSName;
+
+  P.Diag(P.Tok, diag::err_expected) << Close;
+  P.Diag(LOpen, diag::note_matching) << Kind;
 
   // If we're not already at some kind of closing bracket, skip to our closing
   // token.
