@@ -25,27 +25,6 @@
 
 using namespace llvm;
 
-static const std::vector<StringRef>
-getValueAsListOfStrings(Record &R, StringRef FieldName) {
-  ListInit *List = R.getValueAsListInit(FieldName);
-  assert (List && "Got a null ListInit");
-
-  std::vector<StringRef> Strings;
-  Strings.reserve(List->getSize());
-
-  for (ListInit::const_iterator i = List->begin(), e = List->end();
-       i != e;
-       ++i) {
-    assert(*i && "Got a null element in a ListInit");
-    if (StringInit *S = dyn_cast<StringInit>(*i))
-      Strings.push_back(S->getValue());
-    else
-      assert(false && "Got a non-string, non-code element in a ListInit");
-  }
-
-  return Strings;
-}
-
 static std::string ReadPCHRecord(StringRef type) {
   return StringSwitch<std::string>(type)
     .EndsWith("Decl *", "GetLocalDeclAs<" 
@@ -149,6 +128,7 @@ namespace {
     // These functions print the argument contents formatted in different ways.
     virtual void writeAccessors(raw_ostream &OS) const = 0;
     virtual void writeAccessorDefinitions(raw_ostream &OS) const {}
+    virtual void writeASTVisitorTraversal(raw_ostream &OS) const {}
     virtual void writeCloneArgs(raw_ostream &OS) const = 0;
     virtual void writeTemplateInstantiationArgs(raw_ostream &OS) const = 0;
     virtual void writeTemplateInstantiation(raw_ostream &OS) const {}
@@ -554,12 +534,12 @@ namespace {
 
   class EnumArgument : public Argument {
     std::string type;
-    std::vector<StringRef> values, enums, uniques;
+    std::vector<std::string> values, enums, uniques;
   public:
     EnumArgument(Record &Arg, StringRef Attr)
       : Argument(Arg, Attr), type(Arg.getValueAsString("Type")),
-        values(getValueAsListOfStrings(Arg, "Values")),
-        enums(getValueAsListOfStrings(Arg, "Enums")),
+        values(Arg.getValueAsListOfStrings("Values")),
+        enums(Arg.getValueAsListOfStrings("Enums")),
         uniques(enums)
     {
       // Calculate the various enum values
@@ -592,8 +572,8 @@ namespace {
       OS << type << " " << getUpperName();
     }
     void writeDeclarations(raw_ostream &OS) const {
-      std::vector<StringRef>::const_iterator i = uniques.begin(),
-                                             e = uniques.end();
+      std::vector<std::string>::const_iterator i = uniques.begin(),
+                                               e = uniques.end();
       // The last one needs to not have a comma.
       --e;
 
@@ -622,7 +602,7 @@ namespace {
     }
     void writeDump(raw_ostream &OS) const {
       OS << "    switch(SA->get" << getUpperName() << "()) {\n";
-      for (std::vector<StringRef>::const_iterator I = uniques.begin(),
+      for (std::vector<std::string>::const_iterator I = uniques.begin(),
            E = uniques.end(); I != E; ++I) {
         OS << "    case " << getAttrName() << "Attr::" << *I << ":\n";
         OS << "      OS << \" " << *I << "\";\n";
@@ -650,13 +630,13 @@ namespace {
   
   class VariadicEnumArgument: public VariadicArgument {
     std::string type, QualifiedTypeName;
-    std::vector<StringRef> values, enums, uniques;
+    std::vector<std::string> values, enums, uniques;
   public:
     VariadicEnumArgument(Record &Arg, StringRef Attr)
       : VariadicArgument(Arg, Attr, Arg.getValueAsString("Type")),
         type(Arg.getValueAsString("Type")),
-        values(getValueAsListOfStrings(Arg, "Values")),
-        enums(getValueAsListOfStrings(Arg, "Enums")),
+        values(Arg.getValueAsListOfStrings("Values")),
+        enums(Arg.getValueAsListOfStrings("Enums")),
         uniques(enums)
     {
       // Calculate the various enum values
@@ -672,8 +652,8 @@ namespace {
     bool isVariadicEnumArg() const { return true; }
     
     void writeDeclarations(raw_ostream &OS) const {
-      std::vector<StringRef>::const_iterator i = uniques.begin(),
-                                             e = uniques.end();
+      std::vector<std::string>::const_iterator i = uniques.begin(),
+                                               e = uniques.end();
       // The last one needs to not have a comma.
       --e;
 
@@ -692,7 +672,7 @@ namespace {
          << "_iterator I = SA->" << getLowerName() << "_begin(), E = SA->"
          << getLowerName() << "_end(); I != E; ++I) {\n";
       OS << "      switch(*I) {\n";
-      for (std::vector<StringRef>::const_iterator UI = uniques.begin(),
+      for (std::vector<std::string>::const_iterator UI = uniques.begin(),
            UE = uniques.end(); UI != UE; ++UI) {
         OS << "    case " << getAttrName() << "Attr::" << *UI << ":\n";
         OS << "      OS << \" " << *UI << "\";\n";
@@ -794,6 +774,12 @@ namespace {
       : SimpleArgument(Arg, Attr, "Expr *")
     {}
 
+    virtual void writeASTVisitorTraversal(raw_ostream &OS) const {
+      OS << "  if (!"
+         << "getDerived().TraverseStmt(A->get" << getUpperName() << "()))\n";
+      OS << "    return false;\n";
+    }
+
     void writeTemplateInstantiationArgs(raw_ostream &OS) const {
       OS << "tempInst" << getUpperName();
     }
@@ -825,6 +811,19 @@ namespace {
     VariadicExprArgument(Record &Arg, StringRef Attr)
       : VariadicArgument(Arg, Attr, "Expr *")
     {}
+
+    virtual void writeASTVisitorTraversal(raw_ostream &OS) const {
+      OS << "  {\n";
+      OS << "    " << getType() << " *I = A->" << getLowerName()
+         << "_begin();\n";
+      OS << "    " << getType() << " *E = A->" << getLowerName()
+         << "_end();\n";
+      OS << "    for (; I != E; ++I) {\n";
+      OS << "      if (!getDerived().TraverseStmt(*I))\n";
+      OS << "        return false;\n";
+      OS << "    }\n";
+      OS << "  }\n";
+    }
 
     void writeTemplateInstantiationArgs(raw_ostream &OS) const {
       OS << "tempInst" << getUpperName() << ", "
@@ -1567,6 +1566,85 @@ void EmitClangAttrSpellingListIndex(RecordKeeper &Records, raw_ostream &OS) {
   OS << "  }\n";
   OS << "  return 0;\n";
 }
+
+// Emits code used by RecursiveASTVisitor to visit attributes
+void EmitClangAttrASTVisitor(RecordKeeper &Records, raw_ostream &OS) {
+  emitSourceFileHeader("Used by RecursiveASTVisitor to visit attributes.", OS);
+
+  std::vector<Record*> Attrs = Records.getAllDerivedDefinitions("Attr");
+
+  // Write method declarations for Traverse* methods.
+  // We emit this here because we only generate methods for attributes that
+  // are declared as ASTNodes.
+  OS << "#ifdef ATTR_VISITOR_DECLS_ONLY\n\n";
+  for (std::vector<Record*>::iterator I = Attrs.begin(), E = Attrs.end();
+       I != E; ++I) {
+    Record &R = **I;
+    if (!R.getValueAsBit("ASTNode"))
+      continue;
+    OS << "  bool Traverse"
+       << R.getName() << "Attr(" << R.getName() << "Attr *A);\n";
+    OS << "  bool Visit"
+       << R.getName() << "Attr(" << R.getName() << "Attr *A) {\n"
+       << "    return true; \n"
+       << "  };\n";
+  }
+  OS << "\n#else // ATTR_VISITOR_DECLS_ONLY\n\n";
+
+  // Write individual Traverse* methods for each attribute class.
+  for (std::vector<Record*>::iterator I = Attrs.begin(), E = Attrs.end();
+       I != E; ++I) {
+    Record &R = **I;
+    if (!R.getValueAsBit("ASTNode"))
+      continue;
+
+    OS << "template <typename Derived>\n"
+       << "bool VISITORCLASS<Derived>::Traverse"
+       << R.getName() << "Attr(" << R.getName() << "Attr *A) {\n"
+       << "  if (!getDerived().VisitAttr(A))\n"
+       << "    return false;\n"
+       << "  if (!getDerived().Visit" << R.getName() << "Attr(A))\n"
+       << "    return false;\n";
+
+    std::vector<Record*> ArgRecords = R.getValueAsListOfDefs("Args");
+    for (std::vector<Record*>::iterator ri = ArgRecords.begin(),
+                                        re = ArgRecords.end();
+         ri != re; ++ri) {
+      Record &ArgRecord = **ri;
+      Argument *Arg = createArgument(ArgRecord, R.getName());
+      assert(Arg);
+      Arg->writeASTVisitorTraversal(OS);
+    }
+
+    OS << "  return true;\n";
+    OS << "}\n\n";
+  }
+
+  // Write generic Traverse routine
+  OS << "template <typename Derived>\n"
+     << "bool VISITORCLASS<Derived>::TraverseAttr(Attr *A) {\n"
+     << "  if (!A)\n"
+     << "    return true;\n"
+     << "\n"
+     << "  switch (A->getKind()) {\n"
+     << "    default:\n"
+     << "      return true;\n";
+
+  for (std::vector<Record*>::iterator I = Attrs.begin(), E = Attrs.end();
+       I != E; ++I) {
+    Record &R = **I;
+    if (!R.getValueAsBit("ASTNode"))
+      continue;
+
+    OS << "    case attr::" << R.getName() << ":\n"
+       << "      return getDerived().Traverse" << R.getName() << "Attr("
+       << "cast<" << R.getName() << "Attr>(A));\n";
+  }
+  OS << "  }\n";  // end case
+  OS << "}\n";  // end function
+  OS << "#endif  // ATTR_VISITOR_DECLS_ONLY\n";
+}
+
 
 // Emits the LateParsed property for attributes.
 void EmitClangAttrLateParsedList(RecordKeeper &Records, raw_ostream &OS) {

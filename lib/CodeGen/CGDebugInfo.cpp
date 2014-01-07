@@ -1464,13 +1464,13 @@ llvm::DIType CGDebugInfo::CreateType(const RecordType *Ty) {
   // declaration. The completeType, completeRequiredType, and completeClassData
   // callbacks will handle promoting the declaration to a definition.
   if (T ||
+      // Under -fno-standalone-debug:
       (DebugKind <= CodeGenOptions::LimitedDebugInfo &&
-       // Under -flimit-debug-info, emit only a declaration unless the type is
-       // required to be complete.
-       !RD->isCompleteDefinitionRequired() && CGM.getLangOpts().CPlusPlus) ||
-      // If the class is dynamic, only emit a declaration. A definition will be
-      // emitted whenever the vtable is emitted.
-      (CXXDecl && CXXDecl->hasDefinition() && CXXDecl->isDynamicClass())) {
+       // Emit only a forward declaration unless the type is required.
+       ((!RD->isCompleteDefinitionRequired() && CGM.getLangOpts().CPlusPlus) ||
+        // If the class is dynamic, only emit a declaration. A definition will be
+        // emitted whenever the vtable is emitted.
+        (CXXDecl && CXXDecl->hasDefinition() && CXXDecl->isDynamicClass())))) {
     llvm::DIDescriptor FDContext =
       getContextDescriptor(cast<Decl>(RD->getDeclContext()));
     if (!T)
@@ -2537,7 +2537,8 @@ void CGDebugInfo::EmitFunctionStart(GlobalDecl GD, QualType FnType,
 /// information in the source file. If the location is invalid, the
 /// previous location will be reused.
 void CGDebugInfo::EmitLocation(CGBuilderTy &Builder, SourceLocation Loc,
-                               bool ForceColumnInfo) {
+                               bool ForceColumnInfo,
+                               llvm::MDNode *ForceScope) {
   // Update our current location
   setLocation(Loc);
 
@@ -2556,7 +2557,7 @@ void CGDebugInfo::EmitLocation(CGBuilderTy &Builder, SourceLocation Loc,
   // Update last state.
   PrevLoc = CurLoc;
 
-  llvm::MDNode *Scope = LexicalBlockStack.back();
+  llvm::MDNode *Scope = ForceScope ? ForceScope : &*LexicalBlockStack.back();
   Builder.SetCurrentDebugLocation(llvm::DebugLoc::get
                                   (getLineNumber(CurLoc),
                                    getColumnNumber(CurLoc, ForceColumnInfo),
