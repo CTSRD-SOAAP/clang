@@ -25,9 +25,9 @@
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Option/Arg.h"
 #include "llvm/Option/ArgList.h"
+#include "llvm/Option/OptSpecifier.h"
 #include "llvm/Option/OptTable.h"
 #include "llvm/Option/Option.h"
-#include "llvm/Option/OptSpecifier.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
@@ -1879,7 +1879,7 @@ static llvm::Triple computeTargetTriple(StringRef DefaultTargetTriple,
     // Handle the Darwin '-arch' flag.
     if (Arg *A = Args.getLastArg(options::OPT_arch)) {
       if (StringRef(A->getValue()) == "x86_64h")
-        Target.setArchName(DarwinArchName);
+        Target.setArchName(A->getValue());
       else {
         llvm::Triple::ArchType DarwinArch
           = tools::darwin::getArchTypeForDarwinArchName(A->getValue());

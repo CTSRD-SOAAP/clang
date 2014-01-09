@@ -319,6 +319,10 @@ macro(add_clang_library name)
     add_llvm_symbol_exports( ${name} ${LLVM_EXPORTED_SYMBOL_FILE} )
   endif()
 
+  if (MODULE)
+    set_property(TARGET ${name} PROPERTY SUFFIX ${LLVM_PLUGIN_EXT})
+  endif ()
+
   if (NOT LLVM_INSTALL_TOOLCHAIN_ONLY OR ${name} STREQUAL "libclang")
     install(TARGETS ${name}
       LIBRARY DESTINATION lib${LLVM_LIBDIR_SUFFIX}
@@ -410,6 +414,11 @@ add_subdirectory(tools)
 add_subdirectory(runtime)
 
 option(CLANG_BUILD_EXAMPLES "Build CLANG example programs by default." OFF)
+if (CLANG_BUILD_EXAMPLES)
+  set(ENABLE_CLANG_EXAMPLES "1")
+else()
+  set(ENABLE_CLANG_EXAMPLES "0")
+endif()
 add_subdirectory(examples)
 
 option(CLANG_INCLUDE_TESTS

@@ -16,9 +16,9 @@
 #include "CodeGenModule.h"
 #include "TargetInfo.h"
 #include "clang/AST/StmtVisitor.h"
-#include "clang/Sema/SemaDiagnostic.h"
 #include "clang/Basic/PrettyStackTrace.h"
 #include "clang/Basic/TargetInfo.h"
+#include "clang/Sema/SemaDiagnostic.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/InlineAsm.h"
@@ -37,7 +37,7 @@ void CodeGenFunction::EmitStopPoint(const Stmt *S) {
     Loc = S->getLocStart();
     DI->EmitLocation(Builder, Loc);
 
-    LastStopPoint = std::make_pair(Loc, DI->getScope());
+    LastStopPoint = Loc;
   }
 }
 

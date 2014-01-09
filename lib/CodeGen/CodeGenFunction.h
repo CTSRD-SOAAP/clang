@@ -17,9 +17,9 @@
 #include "CGBuilder.h"
 #include "CGDebugInfo.h"
 #include "CGValue.h"
-#include "EHScopeStack.h"
 #include "CodeGenModule.h"
 #include "CodeGenPGO.h"
+#include "EHScopeStack.h"
 #include "clang/AST/CharUnits.h"
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/ExprObjC.h"
@@ -877,7 +877,7 @@ private:
   unsigned NumSimpleReturnExprs;
 
   /// The last regular (non-return) debug location (breakpoint) in the function.
-  std::pair<SourceLocation, llvm::MDNode*> LastStopPoint;
+  SourceLocation LastStopPoint;
 
 public:
   /// A scope within which we are constructing the fields of an object which

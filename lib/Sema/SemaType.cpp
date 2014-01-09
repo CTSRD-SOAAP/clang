@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Sema/SemaInternal.h"
+#include "TypeLocBuilder.h"
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/ASTMutationListener.h"
@@ -34,7 +35,6 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "TypeLocBuilder.h"
 
 using namespace clang;
 
@@ -4747,6 +4747,7 @@ static bool isPermittedNeonBaseType(QualType &Ty,
       // AArch64 polynomial vectors are unsigned and support poly64.
       return BTy->getKind() == BuiltinType::UChar ||
              BTy->getKind() == BuiltinType::UShort ||
+             BTy->getKind() == BuiltinType::ULong ||
              BTy->getKind() == BuiltinType::ULongLong;
     } else {
       // AArch32 polynomial vector are signed.
@@ -4766,6 +4767,8 @@ static bool isPermittedNeonBaseType(QualType &Ty,
          BTy->getKind() == BuiltinType::UShort ||
          BTy->getKind() == BuiltinType::Int ||
          BTy->getKind() == BuiltinType::UInt ||
+         BTy->getKind() == BuiltinType::Long ||
+         BTy->getKind() == BuiltinType::ULong ||
          BTy->getKind() == BuiltinType::LongLong ||
          BTy->getKind() == BuiltinType::ULongLong ||
          BTy->getKind() == BuiltinType::Float ||
