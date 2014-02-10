@@ -1450,127 +1450,191 @@ void RecordLayoutBuilder::LayoutBitField(const FieldDecl *D) {
   uint64_t TypeSize = FieldInfo.first;
   unsigned FieldAlign = FieldInfo.second;
 
+  // UnfilledBitsInLastUnit is the difference between the end of the
+  // last allocated bitfield (i.e. the first bit offset available for
+  // bitfields) and the end of the current data size in bits (i.e. the
+  // first bit offset available for non-bitfields).  The current data
+  // size in bits is always a multiple of the char size; additionally,
+  // for ms_struct records it's also a multiple of the
+  // LastBitfieldTypeSize (if set).
+
+  // The basic bitfield layout rule for ms_struct is to allocate an
+  // entire unit of the bitfield's declared type (e.g. 'unsigned
+  // long'), then parcel it up among successive bitfields whose
+  // declared types have the same size, making a new unit as soon as
+  // the last can no longer store the whole value.
+
+  // The standard bitfield layout rule for non-ms_struct is to place
+  // bitfields at the next available bit offset where the entire
+  // bitfield would fit in an aligned storage unit of the declared
+  // type (even if there are also non-bitfields within that same
+  // unit).  However, some targets (those that !useBitFieldTypeAlignment())
+  // don't require this storage unit to be aligned, and therefore
+  // always put the bit-field at the next available bit offset.
+  // Such targets generally do interpret zero-width bitfields as 
+  // forcing the use of a new storage unit.
+
+  // First, some simple bookkeeping to perform for ms_struct structs.
   if (IsMsStruct) {
-    // The field alignment for integer types in ms_struct structs is
-    // always the size.
+    // The field alignment for integer types is always the size.
     FieldAlign = TypeSize;
-    // Ignore zero-length bitfields after non-bitfields in ms_struct structs.
-    if (!FieldSize && !LastBitfieldTypeSize)
-      FieldAlign = 1;
-    // If a bitfield is followed by a bitfield of a different size, don't
-    // pack the bits together in ms_struct structs.
+
+    // If the previous field was not a bitfield, or was a bitfield
+    // with a different storage unit size, we're done with that
+    // storage unit.
     if (LastBitfieldTypeSize != TypeSize) {
+      // Also, ignore zero-length bitfields after non-bitfields.
+      if (!LastBitfieldTypeSize && !FieldSize)
+        FieldAlign = 1;
+
       UnfilledBitsInLastUnit = 0;
       LastBitfieldTypeSize = 0;
     }
   }
 
-  uint64_t UnpaddedFieldOffset = getDataSizeInBits() - UnfilledBitsInLastUnit;
-  uint64_t FieldOffset = IsUnion ? 0 : UnpaddedFieldOffset;
-
-  bool ZeroLengthBitfield = false;
-  if (!Context.getTargetInfo().useBitFieldTypeAlignment() &&
-      Context.getTargetInfo().useZeroLengthBitfieldAlignment() &&
-      FieldSize == 0) {
-    // The alignment of a zero-length bitfield affects the alignment
-    // of the next member.  The alignment is the max of the zero 
-    // length bitfield's alignment and a target specific fixed value.
-    ZeroLengthBitfield = true;
-    unsigned ZeroLengthBitfieldBoundary =
-      Context.getTargetInfo().getZeroLengthBitfieldBoundary();
-    if (ZeroLengthBitfieldBoundary > FieldAlign)
-      FieldAlign = ZeroLengthBitfieldBoundary;
-  }
-
+  // If the field is wider than its declared type, it follows
+  // different rules in all cases.
   if (FieldSize > TypeSize) {
     LayoutWideBitField(FieldSize, TypeSize, FieldPacked, D);
     return;
   }
 
-  // The align if the field is not packed. This is to check if the attribute
-  // was unnecessary (-Wpacked).
+  // Compute the next available bit offset.
+  uint64_t FieldOffset =
+    IsUnion ? 0 : (getDataSizeInBits() - UnfilledBitsInLastUnit);
+
+  // Handle targets that don't honor bitfield type alignment.
+  if (!Context.getTargetInfo().useBitFieldTypeAlignment()) {
+    // Some such targets do honor it on zero-width bitfields.
+    if (FieldSize == 0 &&
+        Context.getTargetInfo().useZeroLengthBitfieldAlignment()) {
+      // The alignment to round up to is the max of the field's natural
+      // alignment and a target-specific fixed value (sometimes zero).
+      unsigned ZeroLengthBitfieldBoundary =
+        Context.getTargetInfo().getZeroLengthBitfieldBoundary();
+      FieldAlign = std::max(FieldAlign, ZeroLengthBitfieldBoundary);
+
+    // If that doesn't apply, just ignore the field alignment.
+    } else {
+      FieldAlign = 1;
+    }
+  }
+
+  // Remember the alignment we would have used if the field were not packed.
   unsigned UnpackedFieldAlign = FieldAlign;
-  uint64_t UnpackedFieldOffset = FieldOffset;
-  if (!Context.getTargetInfo().useBitFieldTypeAlignment() && !ZeroLengthBitfield)
-    UnpackedFieldAlign = 1;
 
-  if (FieldPacked || 
-      (!Context.getTargetInfo().useBitFieldTypeAlignment() && !ZeroLengthBitfield))
+  // Ignore the field alignment if the field is packed.
+  if (FieldPacked)
     FieldAlign = 1;
-  FieldAlign = std::max(FieldAlign, D->getMaxAlignment());
-  UnpackedFieldAlign = std::max(UnpackedFieldAlign, D->getMaxAlignment());
 
-  // The maximum field alignment overrides the aligned attribute.
-  if (!MaxFieldAlignment.isZero() && FieldSize != 0) {
+  // But, if there's an 'aligned' attribute on the field, honor that.
+  if (unsigned ExplicitFieldAlign = D->getMaxAlignment()) {
+    FieldAlign = std::max(FieldAlign, ExplicitFieldAlign);
+    UnpackedFieldAlign = std::max(UnpackedFieldAlign, ExplicitFieldAlign);
+  }
+
+  // But, if there's a #pragma pack in play, that takes precedent over
+  // even the 'aligned' attribute, for non-zero-width bitfields.
+  if (!MaxFieldAlignment.isZero() && FieldSize) {
     unsigned MaxFieldAlignmentInBits = Context.toBits(MaxFieldAlignment);
     FieldAlign = std::min(FieldAlign, MaxFieldAlignmentInBits);
     UnpackedFieldAlign = std::min(UnpackedFieldAlign, MaxFieldAlignmentInBits);
   }
 
-  // ms_struct bitfields always have to start at a round alignment.
-  if (IsMsStruct && !LastBitfieldTypeSize) {
-    FieldOffset = llvm::RoundUpToAlignment(FieldOffset, FieldAlign);
-    UnpackedFieldOffset = llvm::RoundUpToAlignment(UnpackedFieldOffset,
-                                                   UnpackedFieldAlign);
+  // For purposes of diagnostics, we're going to simultaneously
+  // compute the field offsets that we would have used if we weren't
+  // adding any alignment padding or if the field weren't packed.
+  uint64_t UnpaddedFieldOffset = FieldOffset;
+  uint64_t UnpackedFieldOffset = FieldOffset;
+
+  // Check if we need to add padding to fit the bitfield within an
+  // allocation unit with the right size and alignment.  The rules are
+  // somewhat different here for ms_struct structs.
+  if (IsMsStruct) {
+    // If it's not a zero-width bitfield, and we can fit the bitfield
+    // into the active storage unit (and we haven't already decided to
+    // start a new storage unit), just do so, regardless of any other
+    // other consideration.  Otherwise, round up to the right alignment.
+    if (FieldSize == 0 || FieldSize > UnfilledBitsInLastUnit) {
+      FieldOffset = llvm::RoundUpToAlignment(FieldOffset, FieldAlign);
+      UnpackedFieldOffset = llvm::RoundUpToAlignment(UnpackedFieldOffset,
+                                                     UnpackedFieldAlign);
+      UnfilledBitsInLastUnit = 0;
+    }
+
+  } else {
+    // #pragma pack, with any value, suppresses the insertion of padding.
+    bool AllowPadding = MaxFieldAlignment.isZero();
+
+    // Compute the real offset.
+    if (FieldSize == 0 || 
+        (AllowPadding &&
+         (FieldOffset & (FieldAlign-1)) + FieldSize > TypeSize)) {
+      FieldOffset = llvm::RoundUpToAlignment(FieldOffset, FieldAlign);
+    }
+
+    // Repeat the computation for diagnostic purposes.
+    if (FieldSize == 0 ||
+        (AllowPadding &&
+         (UnpackedFieldOffset & (UnpackedFieldAlign-1)) + FieldSize > TypeSize))
+      UnpackedFieldOffset = llvm::RoundUpToAlignment(UnpackedFieldOffset,
+                                                     UnpackedFieldAlign);
   }
 
-  // Check if we need to add padding to give the field the correct alignment.
-  if (FieldSize == 0 || 
-      (MaxFieldAlignment.isZero() &&
-       (FieldOffset & (FieldAlign-1)) + FieldSize > TypeSize))
-    FieldOffset = llvm::RoundUpToAlignment(FieldOffset, FieldAlign);
-
-  if (FieldSize == 0 ||
-      (MaxFieldAlignment.isZero() &&
-       (UnpackedFieldOffset & (UnpackedFieldAlign-1)) + FieldSize > TypeSize))
-    UnpackedFieldOffset = llvm::RoundUpToAlignment(UnpackedFieldOffset,
-                                                   UnpackedFieldAlign);
-
-  // Padding members don't affect overall alignment, unless zero length bitfield
-  // alignment is enabled.
-  if (!D->getIdentifier() &&
-      !Context.getTargetInfo().useZeroLengthBitfieldAlignment() &&
-      !IsMsStruct)
-    FieldAlign = UnpackedFieldAlign = 1;
-
+  // If we're using external layout, give the external layout a chance
+  // to override this information.
   if (ExternalLayout)
     FieldOffset = updateExternalFieldOffset(D, FieldOffset);
 
-  // Place this field at the current location.
+  // Okay, place the bitfield at the calculated offset.
   FieldOffsets.push_back(FieldOffset);
 
+  // Bookkeeping:
+
+  // Anonymous members don't affect the overall record alignment,
+  // except on targets where they do.
+  if (!IsMsStruct &&
+      !Context.getTargetInfo().useZeroLengthBitfieldAlignment() &&
+      !D->getIdentifier())
+    FieldAlign = UnpackedFieldAlign = 1;
+
+  // Diagnose differences in layout due to padding or packing.
   if (!ExternalLayout)
     CheckFieldPadding(FieldOffset, UnpaddedFieldOffset, UnpackedFieldOffset,
                       UnpackedFieldAlign, FieldPacked, D);
 
   // Update DataSize to include the last byte containing (part of) the bitfield.
+
+  // For unions, this is just a max operation, as usual.
   if (IsUnion) {
     // FIXME: I think FieldSize should be TypeSize here.
     setDataSize(std::max(getDataSizeInBits(), FieldSize));
-  } else {
-    if (IsMsStruct && FieldSize) {
-      // Under ms_struct, a bitfield always takes up space equal to the size
-      // of the type.  We can't just change the alignment computation on the
-      // other codepath because of the way this interacts with #pragma pack:
-      // in a packed struct, we need to allocate misaligned space in the
-      // struct to hold the bitfield.
-      if (!UnfilledBitsInLastUnit) {
-        setDataSize(FieldOffset + TypeSize);
-        UnfilledBitsInLastUnit = TypeSize - FieldSize;
-      } else if (UnfilledBitsInLastUnit < FieldSize) {
-        setDataSize(getDataSizeInBits() + TypeSize);
-        UnfilledBitsInLastUnit = TypeSize - FieldSize;
-      } else {
-        UnfilledBitsInLastUnit -= FieldSize;
-      }
-      LastBitfieldTypeSize = TypeSize;
-    } else {
-      uint64_t NewSizeInBits = FieldOffset + FieldSize;
-      uint64_t BitfieldAlignment = Context.getTargetInfo().getCharAlign();
-      setDataSize(llvm::RoundUpToAlignment(NewSizeInBits, BitfieldAlignment));
-      UnfilledBitsInLastUnit = getDataSizeInBits() - NewSizeInBits;
-      LastBitfieldTypeSize = 0;
+
+  // For non-zero-width bitfields in ms_struct structs, allocate a new
+  // storage unit if necessary.
+  } else if (IsMsStruct && FieldSize) {
+    // We should have cleared UnfilledBitsInLastUnit in every case
+    // where we changed storage units.
+    if (!UnfilledBitsInLastUnit) {
+      setDataSize(FieldOffset + TypeSize);
+      UnfilledBitsInLastUnit = TypeSize;
     }
+    UnfilledBitsInLastUnit -= FieldSize;
+    LastBitfieldTypeSize = TypeSize;
+
+  // Otherwise, bump the data size up to include the bitfield,
+  // including padding up to char alignment, and then remember how
+  // bits we didn't use.
+  } else {
+    uint64_t NewSizeInBits = FieldOffset + FieldSize;
+    uint64_t CharAlignment = Context.getTargetInfo().getCharAlign();
+    setDataSize(llvm::RoundUpToAlignment(NewSizeInBits, CharAlignment));
+    UnfilledBitsInLastUnit = getDataSizeInBits() - NewSizeInBits;
+
+    // The only time we can get here for an ms_struct is if this is a
+    // zero-width bitfield, which doesn't count as anything for the
+    // purposes of unfilled bits.
+    LastBitfieldTypeSize = 0;
   }
 
   // Update the size.
@@ -2028,7 +2092,9 @@ static bool isMsLayout(const RecordDecl* D) {
 //   modes).
 // * There is no concept of non-virtual alignment or any distinction between
 //   data size and non-virtual size.
-
+// * __declspec(align) on bitfields has the effect of changing the bitfield's
+//   alignment instead of its required alignment.  This has implications on how
+//   it interacts with pragam pack.
 
 namespace {
 struct MicrosoftRecordLayoutBuilder {
@@ -2075,10 +2141,6 @@ public:
   /// __declspec(align) into account.  It also updates RequiredAlignment as a
   /// side effect because it is most convenient to do so here.
   ElementInfo getAdjustedElementInfo(const FieldDecl *FD);
-  /// \brief Updates the alignment of the record.
-  void updateAlignment(CharUnits MemberAlignment) {
-    Alignment = std::max(Alignment, MemberAlignment);
-  }
   /// \brief Places a field at an offset in CharUnits.
   void placeFieldAtOffset(CharUnits FieldOffset) {
     FieldOffsets.push_back(Context.toBits(FieldOffset));
@@ -2155,9 +2217,11 @@ MicrosoftRecordLayoutBuilder::getAdjustedElementInfo(
   if (Layout.hasZeroSizedSubObject())
     HasZeroSizedSubObject = true;
   // Respect required alignment, this is necessary because we may have adjusted
-  // the alignment in the case of pragam pack.
+  // the alignment in the case of pragam pack.  Note that the required alignment
+  // doesn't actually apply to the struct alignment at this point.
+  Alignment = std::max(Alignment, Info.Alignment);
   Info.Alignment = std::max(Info.Alignment, Layout.getRequiredAlignment());
-  Info.Size = Layout.getNonVirtualSize();
+  Info.Size = Layout.getDataSize();
   return Info;
 }
 
@@ -2165,6 +2229,9 @@ MicrosoftRecordLayoutBuilder::ElementInfo
 MicrosoftRecordLayoutBuilder::getAdjustedElementInfo(
     const FieldDecl *FD) {
   ElementInfo Info;
+  // Respect align attributes.
+  CharUnits FieldRequiredAlignment = 
+      Context.toCharUnitsFromBits(FD->getMaxAlignment());
   // Respect attributes applied to subobjects of the field.
   if (const RecordType *RT =
       FD->getType()->getBaseElementTypeUnsafe()->getAs<RecordType>()) {
@@ -2173,16 +2240,16 @@ MicrosoftRecordLayoutBuilder::getAdjustedElementInfo(
     Info = getAdjustedElementInfo(Layout);
     // Nomally getAdjustedElementInfo returns the non-virtual size, which is
     // correct for bases but not for fields.
-    Info.Size = Layout.getSize();
+    Info.Size = Context.getTypeInfoInChars(FD->getType()).first;
     // Capture required alignment as a side-effect.
     RequiredAlignment = std::max(RequiredAlignment,
                                  Layout.getRequiredAlignment());
   }
   else {
-    std::pair<CharUnits, CharUnits> FieldInfo =
+    llvm::tie(Info.Size, Info.Alignment) =
         Context.getTypeInfoInChars(FD->getType());
-    Info.Size = FieldInfo.first;
-    Info.Alignment = FieldInfo.second;
+    if (FD->isBitField() && FD->getMaxAlignment() != 0)
+      Info.Alignment = std::max(Info.Alignment, FieldRequiredAlignment);
     // Respect pragma pack.
     if (!MaxFieldAlignment.isZero())
       Info.Alignment = std::min(Info.Alignment, MaxFieldAlignment);
@@ -2190,13 +2257,19 @@ MicrosoftRecordLayoutBuilder::getAdjustedElementInfo(
   // Respect packed field attribute.
   if (FD->hasAttr<PackedAttr>())
     Info.Alignment = CharUnits::One();
-  // Respect align attributes.
-  CharUnits FieldRequiredAlignment = 
-      Context.toCharUnitsFromBits(FD->getMaxAlignment());
-  // Take required alignment into account.
-  Info.Alignment = std::max(Info.Alignment, FieldRequiredAlignment);
-  // Capture required alignment as a side-effect.
-  RequiredAlignment = std::max(RequiredAlignment, FieldRequiredAlignment);
+  // Take required alignment into account.  __declspec(align) on bitfields
+  // impacts the alignment rather than the required alignment.
+  if (!FD->isBitField()) {
+    Info.Alignment = std::max(Info.Alignment, FieldRequiredAlignment);
+    // Capture required alignment as a side-effect.
+    RequiredAlignment = std::max(RequiredAlignment, FieldRequiredAlignment);
+  }
+  // TODO: Add a Sema warning that MS ignores bitfield alignment in unions.
+  if (!(FD->isBitField() && IsUnion)) {
+    Alignment = std::max(Alignment, Info.Alignment);
+    if (!MaxFieldAlignment.isZero())
+      Alignment = std::min(Alignment, MaxFieldAlignment);
+  }
   return Info;
 }
 
@@ -2233,10 +2306,14 @@ void MicrosoftRecordLayoutBuilder::initializeLayout(const RecordDecl *RD) {
   MaxFieldAlignment = CharUnits::Zero();
   // Honor the default struct packing maximum alignment flag.
   if (unsigned DefaultMaxFieldAlignment = Context.getLangOpts().PackStruct)
-    MaxFieldAlignment = CharUnits::fromQuantity(DefaultMaxFieldAlignment);
-  // Honor the packing attribute.
-  if (const MaxFieldAlignmentAttr *MFAA = RD->getAttr<MaxFieldAlignmentAttr>())
-    MaxFieldAlignment = Context.toCharUnitsFromBits(MFAA->getAlignment());
+      MaxFieldAlignment = CharUnits::fromQuantity(DefaultMaxFieldAlignment);
+  // Honor the packing attribute.  The MS-ABI ignores pragma pack if its larger
+  // than the pointer size.
+  if (const MaxFieldAlignmentAttr *MFAA = RD->getAttr<MaxFieldAlignmentAttr>()){
+    unsigned PackedAlignment = MFAA->getAlignment();
+    if (PackedAlignment <= Context.getTargetInfo().getPointerWidth(0))
+      MaxFieldAlignment = Context.toCharUnitsFromBits(PackedAlignment);
+  }
   // Packed attribute forces max field alignment to be 1.
   if (RD->hasAttr<PackedAttr>())
     MaxFieldAlignment = CharUnits::One();
@@ -2292,8 +2369,10 @@ MicrosoftRecordLayoutBuilder::layoutNonVirtualBases(const CXXRecordDecl *RD) {
     if (!BaseLayout.hasExtendableVFPtr())
       continue;
     // If we don't have a primary base, this one qualifies.
-    if (!PrimaryBase)
+    if (!PrimaryBase) {
       PrimaryBase = BaseDecl;
+      LeadsWithZeroSizedBase = BaseLayout.leadsWithZeroSizedBase();
+    }
     // Lay out the base.
     layoutNonVirtualBase(BaseDecl, BaseLayout, PreviousBaseLayout);
   }
@@ -2329,6 +2408,10 @@ MicrosoftRecordLayoutBuilder::layoutNonVirtualBases(const CXXRecordDecl *RD) {
   // Set our VBPtroffset if we know it at this point.
   if (!HasVBPtr)
     VBPtrOffset = CharUnits::fromQuantity(-1);
+  else if (SharedVBPtrBase) {
+    const ASTRecordLayout &Layout = Context.getASTRecordLayout(SharedVBPtrBase);
+    VBPtrOffset = Bases[SharedVBPtrBase] + Layout.getVBPtrOffset();
+  }
 }
 
 void MicrosoftRecordLayoutBuilder::layoutNonVirtualBase(
@@ -2345,7 +2428,6 @@ void MicrosoftRecordLayoutBuilder::layoutNonVirtualBase(
   CharUnits BaseOffset = Size.RoundUpToAlignment(Info.Alignment);
   Bases.insert(std::make_pair(BaseDecl, BaseOffset));
   Size = BaseOffset + BaseLayout.getDataSize();
-  updateAlignment(Info.Alignment);
   PreviousBaseLayout = &BaseLayout;
   VBPtrOffset = Size;
 }
@@ -2373,7 +2455,6 @@ void MicrosoftRecordLayoutBuilder::layoutField(const FieldDecl *FD) {
     placeFieldAtOffset(FieldOffset);
     Size = FieldOffset + Info.Size;
   }
-  updateAlignment(Info.Alignment);
 }
 
 void MicrosoftRecordLayoutBuilder::layoutBitField(const FieldDecl *FD) {
@@ -2401,13 +2482,11 @@ void MicrosoftRecordLayoutBuilder::layoutBitField(const FieldDecl *FD) {
   if (IsUnion) {
     placeFieldAtOffset(CharUnits::Zero());
     Size = std::max(Size, Info.Size);
-    // TODO: Add a Sema warning that MS ignores bitfield alignment in unions.
   } else {
     // Allocate a new block of memory and place the bitfield in it.
     CharUnits FieldOffset = Size.RoundUpToAlignment(Info.Alignment);
     placeFieldAtOffset(FieldOffset);
     Size = FieldOffset + Info.Size;
-    updateAlignment(Info.Alignment);
     RemainingBitsInField = Context.toBits(Info.Size) - Width;
   }
 }
@@ -2432,18 +2511,12 @@ MicrosoftRecordLayoutBuilder::layoutZeroWidthBitField(const FieldDecl *FD) {
     CharUnits FieldOffset = Size.RoundUpToAlignment(Info.Alignment);
     placeFieldAtOffset(FieldOffset);
     Size = FieldOffset;
-    updateAlignment(Info.Alignment);
   }
 }
 
 void MicrosoftRecordLayoutBuilder::injectVBPtr(const CXXRecordDecl *RD) {
-  if (!HasVBPtr)
+  if (!HasVBPtr || SharedVBPtrBase)
     return;
-  if (SharedVBPtrBase) {
-    const ASTRecordLayout &Layout = Context.getASTRecordLayout(SharedVBPtrBase);
-    VBPtrOffset = Bases[SharedVBPtrBase] + Layout.getVBPtrOffset();
-    return;
-  }
   // Inject the VBPointer at the injection site.
   CharUnits InjectionSite = VBPtrOffset;
   // But before we do, make sure it's properly aligned.
@@ -2464,8 +2537,9 @@ void MicrosoftRecordLayoutBuilder::injectVBPtr(const CXXRecordDecl *RD) {
        i != e; ++i)
        if (i->second >= InjectionSite)
          i->second += Offset;
-  // Update the object alignment.
-  updateAlignment(PointerInfo.Alignment);
+  // The presence of a vbptr suppresses zero sized objects that are not in
+  // virtual bases.
+  HasZeroSizedSubObject = false;
 }
 
 void MicrosoftRecordLayoutBuilder::injectVFPtr(const CXXRecordDecl *RD) {
@@ -2486,7 +2560,6 @@ void MicrosoftRecordLayoutBuilder::injectVFPtr(const CXXRecordDecl *RD) {
   for (BaseOffsetsMapTy::iterator i = Bases.begin(), e = Bases.end();
        i != e; ++i)
     i->second += Offset;
-  updateAlignment(PointerInfo.Alignment);
 }
 
 void MicrosoftRecordLayoutBuilder::injectVPtrs(const CXXRecordDecl *RD) {
@@ -2498,6 +2571,7 @@ void MicrosoftRecordLayoutBuilder::injectVPtrs(const CXXRecordDecl *RD) {
     // the record.
     injectVBPtr(RD);
     injectVFPtr(RD);
+    Alignment = std::max(Alignment, PointerInfo.Alignment);
     return;
   }
   // In 64-bit mode, structs with RequiredAlignment greater than 8 get special
@@ -2507,7 +2581,7 @@ void MicrosoftRecordLayoutBuilder::injectVPtrs(const CXXRecordDecl *RD) {
   FieldOffsets.clear();
   Bases.clear();
   Size = CharUnits::Zero();
-  updateAlignment(PointerInfo.Alignment);
+  Alignment = std::max(Alignment, PointerInfo.Alignment);
   if (HasOwnVFPtr)
     Size = PointerInfo.Size;
   layoutNonVirtualBases(RD);
@@ -2538,23 +2612,26 @@ void MicrosoftRecordLayoutBuilder::injectVPtrs(const CXXRecordDecl *RD) {
     // different from the general case layout but it may have to do with lazy
     // placement of zero sized bases.
     VBPtrOffset = Size;
-    if (LastBaseLayout && LastBaseLayout->getNonVirtualSize().isZero()) {
+    if (LastBaseLayout && LastBaseLayout->getDataSize().isZero()) {
       VBPtrOffset = Bases[LastBaseDecl];
-      if (PenultBaseLayout && PenultBaseLayout->getNonVirtualSize().isZero())
+      if (PenultBaseLayout && PenultBaseLayout->getDataSize().isZero())
         VBPtrOffset = Bases[PenultBaseDecl];
     }
     // Once we've located a spot for the vbptr, place it.
     VBPtrOffset = VBPtrOffset.RoundUpToAlignment(PointerInfo.Alignment);
     Size = VBPtrOffset + PointerInfo.Size;
-    if (LastBaseLayout && LastBaseLayout->getNonVirtualSize().isZero()) {
+    if (LastBaseLayout && LastBaseLayout->getDataSize().isZero()) {
       // Add the padding between zero sized bases after the vbptr.
-      if (PenultBaseLayout && PenultBaseLayout->getNonVirtualSize().isZero())
+      if (PenultBaseLayout && PenultBaseLayout->getDataSize().isZero())
         Size += CharUnits::One();
       Size = Size.RoundUpToAlignment(LastBaseLayout->getRequiredAlignment());
       Bases[LastBaseDecl] = Size;
     }
   }
   layoutFields(RD);
+  // The presence of a vbptr suppresses zero sized objects that are not in
+  // virtual bases.
+  HasZeroSizedSubObject = false;
 }
 
 void MicrosoftRecordLayoutBuilder::layoutVirtualBases(const CXXRecordDecl *RD) {
@@ -2601,8 +2678,7 @@ void MicrosoftRecordLayoutBuilder::layoutVirtualBases(const CXXRecordDecl *RD) {
     CharUnits BaseOffset = Size.RoundUpToAlignment(Info.Alignment);
     VBases.insert(std::make_pair(BaseDecl,
         ASTRecordLayout::VBaseInfo(BaseOffset, HasVtordisp)));
-    Size = BaseOffset + BaseLayout.getNonVirtualSize();
-    updateAlignment(Info.Alignment);
+    Size = BaseOffset + BaseLayout.getDataSize();
     PreviousBaseLayout = &BaseLayout;
   }
 }

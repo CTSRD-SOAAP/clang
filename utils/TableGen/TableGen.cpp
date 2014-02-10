@@ -24,8 +24,7 @@ using namespace clang;
 
 enum ActionType {
   GenClangAttrClasses,
-  GenClangAttrIdentifierArgList,
-  GenClangAttrTypeArgList,
+  GenClangAttrParserStringSwitches,
   GenClangAttrImpl,
   GenClangAttrList,
   GenClangAttrPCHRead,
@@ -33,7 +32,6 @@ enum ActionType {
   GenClangAttrSpellingList,
   GenClangAttrSpellingListIndex,
   GenClangAttrASTVisitor,
-  GenClangAttrLateParsedList,
   GenClangAttrTemplateInstantiate,
   GenClangAttrParsedAttrList,
   GenClangAttrParsedAttrImpl,
@@ -62,14 +60,9 @@ cl::opt<ActionType> Action(
     cl::values(
         clEnumValN(GenClangAttrClasses, "gen-clang-attr-classes",
                    "Generate clang attribute clases"),
-        clEnumValN(GenClangAttrIdentifierArgList,
-                   "gen-clang-attr-identifier-arg-list",
-                   "Generate a list of attributes that take an "
-                   "identifier as their first argument"),
-        clEnumValN(GenClangAttrTypeArgList,
-                   "gen-clang-attr-type-arg-list",
-                   "Generate a list of attributes that take a type as their "
-                   "first argument"),
+        clEnumValN(GenClangAttrParserStringSwitches,
+                   "gen-clang-attr-parser-string-switches",
+                   "Generate all parser-related attribute string switches"),
         clEnumValN(GenClangAttrImpl, "gen-clang-attr-impl",
                    "Generate clang attribute implementations"),
         clEnumValN(GenClangAttrList, "gen-clang-attr-list",
@@ -86,9 +79,6 @@ cl::opt<ActionType> Action(
         clEnumValN(GenClangAttrASTVisitor,
                    "gen-clang-attr-ast-visitor",
                    "Generate a recursive AST visitor for clang attributes"),
-        clEnumValN(GenClangAttrLateParsedList,
-                   "gen-clang-attr-late-parsed-list",
-                   "Generate a clang attribute LateParsed list"),
         clEnumValN(GenClangAttrTemplateInstantiate,
                    "gen-clang-attr-template-instantiate",
                    "Generate a clang template instantiate code"),
@@ -151,11 +141,8 @@ bool ClangTableGenMain(raw_ostream &OS, RecordKeeper &Records) {
   case GenClangAttrClasses:
     EmitClangAttrClass(Records, OS);
     break;
-  case GenClangAttrIdentifierArgList:
-    EmitClangAttrIdentifierArgList(Records, OS);
-    break;
-  case GenClangAttrTypeArgList:
-    EmitClangAttrTypeArgList(Records, OS);
+  case GenClangAttrParserStringSwitches:
+    EmitClangAttrParserStringSwitches(Records, OS);
     break;
   case GenClangAttrImpl:
     EmitClangAttrImpl(Records, OS);
@@ -177,9 +164,6 @@ bool ClangTableGenMain(raw_ostream &OS, RecordKeeper &Records) {
     break;
   case GenClangAttrASTVisitor:
     EmitClangAttrASTVisitor(Records, OS);
-    break;
-  case GenClangAttrLateParsedList:
-    EmitClangAttrLateParsedList(Records, OS);
     break;
   case GenClangAttrTemplateInstantiate:
     EmitClangAttrTemplateInstantiate(Records, OS);
@@ -256,9 +240,11 @@ int main(int argc, char **argv) {
   return TableGenMain(argv[0], &ClangTableGenMain);
 }
 
-extern "C" {
+#ifdef __has_feature
+#if __has_feature(address_sanitizer)
+#include <sanitizer/lsan_interface.h>
 // Disable LeakSanitizer for this binary as it has too many leaks that are not
-// very interesting to fix. __lsan_is_turned_off is explained in
-// compiler-rt/include/sanitizer/lsan_interface.h
+// very interesting to fix. See compiler-rt/include/sanitizer/lsan_interface.h .
 int __lsan_is_turned_off() { return 1; }
-}  // extern "C"
+#endif  // __has_feature(address_sanitizer)
+#endif  // defined(__has_feature)

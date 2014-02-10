@@ -162,7 +162,7 @@ void Preprocessor::ReadMacroName(Token &MacroNameTok, char isDefineUndef) {
     const IdentifierInfo &Info = Identifiers.get(Spelling);
 
     // Allow #defining |and| and friends in microsoft mode.
-    if (Info.isCPlusPlusOperatorKeyword() && getLangOpts().MicrosoftMode) {
+    if (Info.isCPlusPlusOperatorKeyword() && getLangOpts().MSVCCompat) {
       MacroNameTok.setIdentifierInfo(getIdentifierInfo(Spelling));
       return;
     }
@@ -582,7 +582,7 @@ const FileEntry *Preprocessor::LookupFile(
     // MSVC searches the current include stack from top to bottom for
     // headers included by quoted include directives.
     // See: http://msdn.microsoft.com/en-us/library/36k2cdd4.aspx
-    if (LangOpts.MicrosoftMode && !isAngled) {
+    if (LangOpts.MSVCCompat && !isAngled) {
       for (unsigned i = 0, e = IncludeMacroStack.size(); i != e; ++i) {
         IncludeStackInfo &ISEntry = IncludeMacroStack[e - i - 1];
         if (IsFileLexer(ISEntry))
@@ -1660,14 +1660,18 @@ void Preprocessor::HandleIncludeDirective(SourceLocation HashLoc,
   }
 
   // If all is good, enter the new file!
-  EnterSourceFile(FID, CurDir, FilenameTok.getLocation(),
-                  static_cast<bool>(BuildingModule));
+  if (EnterSourceFile(FID, CurDir, FilenameTok.getLocation()))
+    return;
 
   // If we're walking into another part of the same module, let the parser
   // know that any future declarations are within that other submodule.
-  if (BuildingModule)
+  if (BuildingModule) {
+    assert(!CurSubmodule && "should not have marked this as a module yet");
+    CurSubmodule = BuildingModule.getModule();
+
     EnterAnnotationToken(*this, HashLoc, End, tok::annot_module_begin,
-                         BuildingModule.getModule());
+                         CurSubmodule);
+  }
 }
 
 /// HandleIncludeNextDirective - Implements \#include_next.
@@ -1712,7 +1716,7 @@ void Preprocessor::HandleMicrosoftImportDirective(Token &Tok) {
 void Preprocessor::HandleImportDirective(SourceLocation HashLoc,
                                          Token &ImportTok) {
   if (!LangOpts.ObjC1) {  // #import is standard for ObjC.
-    if (LangOpts.MicrosoftMode)
+    if (LangOpts.MSVCCompat)
       return HandleMicrosoftImportDirective(ImportTok);
     Diag(ImportTok, diag::ext_pp_import_directive);
   }

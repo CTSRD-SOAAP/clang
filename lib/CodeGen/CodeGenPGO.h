@@ -33,12 +33,22 @@ private:
   llvm::OwningPtr<llvm::MemoryBuffer> DataBuffer;
   /// Offsets into DataBuffer for each function's counters
   llvm::StringMap<unsigned> DataOffsets;
+  /// Execution counts for each function.
+  llvm::StringMap<uint64_t> FunctionCounts;
+  /// The maximal execution count among all functions.
+  uint64_t MaxFunctionCount;
   CodeGenModule &CGM;
 public:
   PGOProfileData(CodeGenModule &CGM, std::string Path);
   /// Fill Counts with the profile data for the given function name. Returns
   /// false on success.
   bool getFunctionCounts(StringRef MangledName, std::vector<uint64_t> &Counts);
+  /// Return true if a function is hot. If we know nothing about the function,
+  /// return false.
+  bool isHotFunction(StringRef MangledName);
+  /// Return true if a function is cold. If we know nothing about the function,
+  /// return false.
+  bool isColdFunction(StringRef MangledName);
 };
 
 /// Per-function PGO state. This class should generally not be used directly,
@@ -74,6 +84,10 @@ public:
   /// of changes to the most recent counter from control flow and non-local
   /// exits.
   void setCurrentRegionCount(uint64_t Count) { CurrentRegionCount = Count; }
+  /// Indicate that the current region is never reached, and thus should have a
+  /// counter value of zero. This is important so that subsequent regions can
+  /// correctly track their parent counts.
+  void setCurrentRegionUnreachable() { setCurrentRegionCount(0); }
 
   /// Calculate branch weights appropriate for PGO data
   llvm::MDNode *createBranchWeights(uint64_t TrueCount, uint64_t FalseCount);
@@ -196,15 +210,15 @@ public:
     PGO->setCurrentRegionCount(RegionCount);
   }
 
-  /// Control may either enter or leave the region, so the count at the end may
-  /// be different from the start. Call this to track that adjustment without
-  /// modifying the current count. Must not be called before one of beginRegion
-  /// or beginElseRegion.
-  void adjustFallThroughCount() {
+  /// Adjust for non-local control flow after emitting a subexpression or
+  /// substatement. This must be called to account for constructs such as gotos,
+  /// labels, and returns, so that we can ensure that our region's count is
+  /// correct in the code that follows.
+  void adjustForControlFlow() {
     Adjust += PGO->getCurrentRegionCount() - RegionCount;
   }
   /// Commit all adjustments to the current region. This should be called after
-  /// all blocks that adjust the fallthrough count have been emitted.
+  /// all blocks that adjust for control flow count have been emitted.
   void applyAdjustmentsToRegion() {
     PGO->setCurrentRegionCount(ParentCount + Adjust);
   }
