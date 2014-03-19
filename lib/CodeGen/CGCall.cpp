@@ -26,10 +26,10 @@
 #include "clang/Frontend/CodeGenOptions.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/IR/Attributes.h"
+#include "llvm/IR/CallSite.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Intrinsics.h"
-#include "llvm/Support/CallSite.h"
 #include "llvm/Transforms/Utils/Local.h"
 using namespace clang;
 using namespace CodeGen;
@@ -318,9 +318,8 @@ CodeGenTypes::arrangeObjCMessageSendSignature(const ObjCMethodDecl *MD,
   argTys.push_back(Context.getCanonicalParamType(receiverType));
   argTys.push_back(Context.getCanonicalParamType(Context.getObjCSelType()));
   // FIXME: Kill copy?
-  for (ObjCMethodDecl::param_const_iterator i = MD->param_begin(),
-         e = MD->param_end(); i != e; ++i) {
-    argTys.push_back(Context.getCanonicalParamType((*i)->getType()));
+  for (const auto *I : MD->params()) {
+    argTys.push_back(Context.getCanonicalParamType(I->getType()));
   }
 
   FunctionType::ExtInfo einfo;
@@ -498,10 +497,9 @@ CodeGenTypes::arrangeLLVMFunctionInfo(CanQualType resultType,
   if (retInfo.canHaveCoerceToType() && retInfo.getCoerceToType() == 0)
     retInfo.setCoerceToType(ConvertType(FI->getReturnType()));
 
-  for (CGFunctionInfo::arg_iterator I = FI->arg_begin(), E = FI->arg_end();
-       I != E; ++I)
-    if (I->info.canHaveCoerceToType() && I->info.getCoerceToType() == 0)
-      I->info.setCoerceToType(ConvertType(I->type));
+  for (auto &I : FI->arguments())
+    if (I.info.canHaveCoerceToType() && I.info.getCoerceToType() == 0)
+      I.info.setCoerceToType(ConvertType(I.type));
 
   bool erased = FunctionsBeingProcessed.erase(FI); (void)erased;
   assert(erased && "Not in set?");
@@ -553,9 +551,7 @@ void CodeGenTypes::GetExpandedTypes(QualType type,
       const FieldDecl *LargestFD = 0;
       CharUnits UnionSize = CharUnits::Zero();
 
-      for (RecordDecl::field_iterator i = RD->field_begin(), e = RD->field_end();
-           i != e; ++i) {
-        const FieldDecl *FD = *i;
+      for (const auto *FD : RD->fields()) {
         assert(!FD->isBitField() &&
                "Cannot expand structure with bit-field members.");
         CharUnits FieldSize = getContext().getTypeSizeInChars(FD->getType());
@@ -567,11 +563,10 @@ void CodeGenTypes::GetExpandedTypes(QualType type,
       if (LargestFD)
         GetExpandedTypes(LargestFD->getType(), expandedTypes);
     } else {
-      for (RecordDecl::field_iterator i = RD->field_begin(), e = RD->field_end();
-           i != e; ++i) {
-        assert(!i->isBitField() &&
+      for (const auto *I : RD->fields()) {
+        assert(!I->isBitField() &&
                "Cannot expand structure with bit-field members.");
-        GetExpandedTypes(i->getType(), expandedTypes);
+        GetExpandedTypes(I->getType(), expandedTypes);
       }
     }
   } else if (const ComplexType *CT = type->getAs<ComplexType>()) {
@@ -604,9 +599,7 @@ CodeGenFunction::ExpandTypeFromArgs(QualType Ty, LValue LV,
       const FieldDecl *LargestFD = 0;
       CharUnits UnionSize = CharUnits::Zero();
 
-      for (RecordDecl::field_iterator i = RD->field_begin(), e = RD->field_end();
-           i != e; ++i) {
-        const FieldDecl *FD = *i;
+      for (const auto *FD : RD->fields()) {
         assert(!FD->isBitField() &&
                "Cannot expand structure with bit-field members.");
         CharUnits FieldSize = getContext().getTypeSizeInChars(FD->getType());
@@ -621,9 +614,7 @@ CodeGenFunction::ExpandTypeFromArgs(QualType Ty, LValue LV,
         AI = ExpandTypeFromArgs(LargestFD->getType(), SubLV, AI);
       }
     } else {
-      for (RecordDecl::field_iterator i = RD->field_begin(), e = RD->field_end();
-           i != e; ++i) {
-        FieldDecl *FD = *i;
+      for (const auto *FD : RD->fields()) {
         QualType FT = FD->getType();
 
         // FIXME: What are the right qualifiers here?
@@ -940,7 +931,15 @@ CodeGenTypes::GetFunctionType(const CGFunctionInfo &FI) {
     break;
 
   case ABIArgInfo::InAlloca:
-    resultType = llvm::Type::getVoidTy(getLLVMContext());
+    if (retAI.getInAllocaSRet()) {
+      // sret things on win32 aren't void, they return the sret pointer.
+      QualType ret = FI.getReturnType();
+      llvm::Type *ty = ConvertType(ret);
+      unsigned addressSpace = Context.getTargetAddressSpace(ret);
+      resultType = llvm::PointerType::get(ty, addressSpace);
+    } else {
+      resultType = llvm::Type::getVoidTy(getLLVMContext());
+    }
     break;
 
   case ABIArgInfo::Indirect: {
@@ -1052,6 +1051,8 @@ void CodeGenModule::ConstructAttributeList(const CGFunctionInfo &FI,
       FuncAttrs.addAttribute(llvm::Attribute::NoUnwind);
     if (TargetDecl->hasAttr<NoReturnAttr>())
       FuncAttrs.addAttribute(llvm::Attribute::NoReturn);
+    if (TargetDecl->hasAttr<NoDuplicateAttr>())
+      FuncAttrs.addAttribute(llvm::Attribute::NoDuplicate);
 
     if (const FunctionDecl *Fn = dyn_cast<FunctionDecl>(TargetDecl)) {
       const FunctionProtoType *FPT = Fn->getType()->getAs<FunctionProtoType>();
@@ -1167,10 +1168,9 @@ void CodeGenModule::ConstructAttributeList(const CGFunctionInfo &FI,
                                     llvm::AttributeSet::ReturnIndex,
                                     RetAttrs));
 
-  for (CGFunctionInfo::const_arg_iterator it = FI.arg_begin(),
-         ie = FI.arg_end(); it != ie; ++it) {
-    QualType ParamType = it->type;
-    const ABIArgInfo &AI = it->info;
+  for (const auto &I : FI.arguments()) {
+    QualType ParamType = I.type;
+    const ABIArgInfo &AI = I.info;
     llvm::AttrBuilder Attrs;
 
     if (AI.getPaddingType()) {
@@ -1740,7 +1740,7 @@ static llvm::StoreInst *findDominatingStoreToReturnValue(CodeGenFunction &CGF) {
   }
 
   llvm::StoreInst *store =
-    dyn_cast<llvm::StoreInst>(CGF.ReturnValue->use_back());
+    dyn_cast<llvm::StoreInst>(CGF.ReturnValue->user_back());
   if (!store) return 0;
 
   // These aren't actually possible for non-coerced returns, and we
@@ -1777,7 +1777,17 @@ void CodeGenFunction::EmitFunctionEpilog(const CGFunctionInfo &FI,
 
   switch (RetAI.getKind()) {
   case ABIArgInfo::InAlloca:
-    // Do nothing; aggregrates get evaluated directly into the destination.
+    // Aggregrates get evaluated directly into the destination.  Sometimes we
+    // need to return the sret value in a register, though.
+    assert(hasAggregateEvaluationKind(RetTy));
+    if (RetAI.getInAllocaSRet()) {
+      llvm::Function::arg_iterator EI = CurFn->arg_end();
+      --EI;
+      llvm::Value *ArgStruct = EI;
+      llvm::Value *SRet =
+          Builder.CreateStructGEP(ArgStruct, RetAI.getInAllocaFieldIndex());
+      RV = Builder.CreateLoad(SRet, "sret");
+    }
     break;
 
   case ABIArgInfo::Indirect: {
@@ -2003,9 +2013,8 @@ static void emitWriteback(CodeGenFunction &CGF,
 
 static void emitWritebacks(CodeGenFunction &CGF,
                            const CallArgList &args) {
-  for (CallArgList::writeback_iterator
-         i = args.writeback_begin(), e = args.writeback_end(); i != e; ++i)
-    emitWriteback(CGF, *i);
+  for (const auto &I : args.writebacks())
+    emitWriteback(CGF, I);
 }
 
 static void deactivateArgCleanupsBeforeCall(CodeGenFunction &CGF,
@@ -2238,7 +2247,7 @@ struct DestroyUnpassedArg : EHScopeStack::Cleanup {
   llvm::Value *Addr;
   QualType Ty;
 
-  void Emit(CodeGenFunction &CGF, Flags flags) {
+  void Emit(CodeGenFunction &CGF, Flags flags) override {
     const CXXDestructorDecl *Dtor = Ty->getAsCXXRecordDecl()->getDestructor();
     assert(!Dtor->isTrivial());
     CGF.EmitCXXDestructorCall(Dtor, Dtor_Complete, /*for vbase*/ false,
@@ -2456,9 +2465,7 @@ void CodeGenFunction::ExpandTypeToArgs(QualType Ty, RValue RV,
       const FieldDecl *LargestFD = 0;
       CharUnits UnionSize = CharUnits::Zero();
 
-      for (RecordDecl::field_iterator i = RD->field_begin(), e = RD->field_end();
-           i != e; ++i) {
-        const FieldDecl *FD = *i;
+      for (const auto *FD : RD->fields()) {
         assert(!FD->isBitField() &&
                "Cannot expand structure with bit-field members.");
         CharUnits FieldSize = getContext().getTypeSizeInChars(FD->getType());
@@ -2472,10 +2479,7 @@ void CodeGenFunction::ExpandTypeToArgs(QualType Ty, RValue RV,
         ExpandTypeToArgs(LargestFD->getType(), FldRV, Args, IRFuncTy);
       }
     } else {
-      for (RecordDecl::field_iterator i = RD->field_begin(), e = RD->field_end();
-           i != e; ++i) {
-        FieldDecl *FD = *i;
-
+      for (const auto *FD : RD->fields()) {
         RValue FldRV = EmitRValueForField(LV, FD, SourceLocation());
         ExpandTypeToArgs(FD->getType(), FldRV, Args, IRFuncTy);
       }

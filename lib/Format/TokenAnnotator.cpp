@@ -34,6 +34,7 @@ public:
       : Style(Style), Line(Line), CurrentToken(Line.First),
         KeywordVirtualFound(false), AutoFound(false), Ident_in(Ident_in) {
     Contexts.push_back(Context(tok::unknown, 1, /*IsExpression=*/false));
+    resetTokenMetadata(CurrentToken);
   }
 
 private:
@@ -183,6 +184,9 @@ private:
           !CurrentToken->Next->HasUnescapedNewline &&
           !CurrentToken->Next->isTrailingComment())
         HasMultipleParametersOnALine = true;
+      if (CurrentToken->is(tok::kw_const) ||
+          CurrentToken->isSimpleTypeSpecifier())
+        Contexts.back().IsExpression = false;
       if (!consumeToken())
         return false;
       if (CurrentToken && CurrentToken->HasUnescapedNewline)
@@ -568,6 +572,22 @@ public:
   }
 
 private:
+  void resetTokenMetadata(FormatToken *Token) {
+    if (Token == nullptr) return;
+
+    // Reset token type in case we have already looked at it and then
+    // recovered from an error (e.g. failure to find the matching >).
+    if (CurrentToken->Type != TT_LambdaLSquare &&
+        CurrentToken->Type != TT_FunctionLBrace &&
+        CurrentToken->Type != TT_ImplicitStringLiteral &&
+        CurrentToken->Type != TT_TrailingReturnArrow)
+      CurrentToken->Type = TT_Unknown;
+    if (CurrentToken->Role)
+      CurrentToken->Role.reset(NULL);
+    CurrentToken->FakeLParens.clear();
+    CurrentToken->FakeRParens = 0;
+  }
+
   void next() {
     if (CurrentToken != NULL) {
       determineTokenType(*CurrentToken);
@@ -578,18 +598,7 @@ private:
     if (CurrentToken != NULL)
       CurrentToken = CurrentToken->Next;
 
-    if (CurrentToken != NULL) {
-      // Reset token type in case we have already looked at it and then
-      // recovered from an error (e.g. failure to find the matching >).
-      if (CurrentToken->Type != TT_LambdaLSquare &&
-          CurrentToken->Type != TT_FunctionLBrace &&
-          CurrentToken->Type != TT_ImplicitStringLiteral)
-        CurrentToken->Type = TT_Unknown;
-      if (CurrentToken->Role)
-        CurrentToken->Role.reset(NULL);
-      CurrentToken->FakeLParens.clear();
-      CurrentToken->FakeRParens = 0;
-    }
+    resetTokenMetadata(CurrentToken);
   }
 
   /// \brief A struct to hold information valid in a specific context, e.g.
@@ -730,7 +739,8 @@ private:
             LeftOfParens &&
             LeftOfParens->isOneOf(tok::kw_sizeof, tok::kw_alignof);
         if (ParensAreType && !ParensCouldEndDecl && !IsSizeOfOrAlignOf &&
-            (Contexts.back().IsExpression ||
+            ((Contexts.size() > 1 &&
+              Contexts[Contexts.size() - 2].IsExpression) ||
              (Current.Next && Current.Next->isBinaryOperator())))
           IsCast = true;
         if (Current.Next && Current.Next->isNot(tok::string_literal) &&
@@ -1099,7 +1109,8 @@ void TokenAnnotator::calculateFormattingInformation(AnnotatedLine &Line) {
   bool InFunctionDecl = Line.MightBeFunctionDecl;
   while (Current != NULL) {
     if (Current->Type == TT_LineComment) {
-      if (Current->Previous->BlockKind == BK_BracedInit)
+      if (Current->Previous->BlockKind == BK_BracedInit &&
+          Current->Previous->opensScope())
         Current->SpacesRequiredBefore = Style.Cpp11BracedListStyle ? 0 : 1;
       else
         Current->SpacesRequiredBefore = Style.SpacesBeforeTrailingComments;
@@ -1212,10 +1223,16 @@ unsigned TokenAnnotator::splitPenalty(const AnnotatedLine &Line,
 
   if (Right.Type == TT_TrailingAnnotation && Right.Next &&
       Right.Next->isNot(tok::l_paren)) {
-    // Breaking before a trailing annotation is bad unless it is function-like.
+    // Generally, breaking before a trailing annotation is bad unless it is
+    // function-like. It seems to be especially preferable to keep standard
+    // annotations (i.e. "const", "final" and "override") on the same line.
     // Use a slightly higher penalty after ")" so that annotations like
     // "const override" are kept together.
-    return Left.is(tok::r_paren) ? 100 : 120;
+    bool is_standard_annotation = Right.is(tok::kw_const) ||
+                                  Right.TokenText == "override" ||
+                                  Right.TokenText == "final";
+    return (Left.is(tok::r_paren) ? 100 : 120) +
+           (is_standard_annotation ? 50 : 0);
   }
 
   // In for-loops, prefer breaking at ',' and ';'.
@@ -1503,6 +1520,8 @@ bool TokenAnnotator::canBreakBefore(const AnnotatedLine &Line,
   if (Right.is(tok::colon) &&
       (Right.Type == TT_DictLiteral || Right.Type == TT_ObjCMethodExpr))
     return false;
+  if (Right.Type == TT_InheritanceColon)
+    return true;
   if (Left.is(tok::colon) &&
       (Left.Type == TT_DictLiteral || Left.Type == TT_ObjCMethodExpr))
     return true;
