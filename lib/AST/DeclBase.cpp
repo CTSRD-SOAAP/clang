@@ -837,7 +837,7 @@ static bool isLinkageSpecContext(const DeclContext *DC,
   while (DC->getDeclKind() != Decl::TranslationUnit) {
     if (DC->getDeclKind() == Decl::LinkageSpec)
       return cast<LinkageSpecDecl>(DC)->getLanguage() == ID;
-    DC = DC->getParent();
+    DC = DC->getLexicalParent();
   }
   return false;
 }
@@ -900,18 +900,17 @@ DeclContext *DeclContext::getPrimaryContext() {
       // If this is a tag type that has a definition or is currently
       // being defined, that definition is our primary context.
       TagDecl *Tag = cast<TagDecl>(this);
-      assert(isa<TagType>(Tag->TypeForDecl) ||
-             isa<InjectedClassNameType>(Tag->TypeForDecl));
 
       if (TagDecl *Def = Tag->getDefinition())
         return Def;
 
-      if (!isa<InjectedClassNameType>(Tag->TypeForDecl)) {
-        const TagType *TagTy = cast<TagType>(Tag->TypeForDecl);
-        if (TagTy->isBeingDefined())
-          // FIXME: is it necessarily being defined in the decl
-          // that owns the type?
-          return TagTy->getDecl();
+      if (const TagType *TagTy = dyn_cast<TagType>(Tag->getTypeForDecl())) {
+        // Note, TagType::getDecl returns the (partial) definition one exists.
+        TagDecl *PossiblePartialDef = TagTy->getDecl();
+        if (PossiblePartialDef->isBeingDefined())
+          return PossiblePartialDef;
+      } else {
+        assert(isa<InjectedClassNameType>(Tag->getTypeForDecl()));
       }
 
       return Tag;
@@ -965,13 +964,12 @@ DeclContext::BuildDeclChain(ArrayRef<Decl*> Decls,
 /// \brief We have just acquired external visible storage, and we already have
 /// built a lookup map. For every name in the map, pull in the new names from
 /// the external storage.
-void DeclContext::reconcileExternalVisibleStorage() {
+void DeclContext::reconcileExternalVisibleStorage() const {
   assert(NeedToReconcileExternalVisibleStorage && LookupPtr.getPointer());
   NeedToReconcileExternalVisibleStorage = false;
 
-  StoredDeclsMap &Map = *LookupPtr.getPointer();
-  for (StoredDeclsMap::iterator I = Map.begin(); I != Map.end(); ++I)
-    I->second.setHasExternalDecls();
+  for (auto &Lookup : *LookupPtr.getPointer())
+    Lookup.second.setHasExternalDecls();
 }
 
 /// \brief Load the declarations within this lexical storage from an
@@ -1023,6 +1021,8 @@ ExternalASTSource::SetNoExternalVisibleDeclsForName(const DeclContext *DC,
   StoredDeclsMap *Map;
   if (!(Map = DC->LookupPtr.getPointer()))
     Map = DC->CreateStoredDeclsMap(Context);
+  if (DC->NeedToReconcileExternalVisibleStorage)
+    DC->reconcileExternalVisibleStorage();
 
   (*Map)[Name].removeExternalDecls();
 
@@ -1037,6 +1037,8 @@ ExternalASTSource::SetExternalVisibleDeclsForName(const DeclContext *DC,
   StoredDeclsMap *Map;
   if (!(Map = DC->LookupPtr.getPointer()))
     Map = DC->CreateStoredDeclsMap(Context);
+  if (DC->NeedToReconcileExternalVisibleStorage)
+    DC->reconcileExternalVisibleStorage();
 
   StoredDeclsList &List = (*Map)[Name];
 
@@ -1208,6 +1210,10 @@ static bool shouldBeHidden(NamedDecl *D) {
 /// buildLookup - Build the lookup data structure with all of the
 /// declarations in this DeclContext (and any other contexts linked
 /// to it or transparent contexts nested within it) and return it.
+///
+/// Note that the produced map may miss out declarations from an
+/// external source. If it does, those entries will be marked with
+/// the 'hasExternalDecls' flag.
 StoredDeclsMap *DeclContext::buildLookup() {
   assert(this == getPrimaryContext() && "buildLookup called on non-primary DC");
 
@@ -1223,7 +1229,6 @@ StoredDeclsMap *DeclContext::buildLookup() {
 
   // We no longer have any lazy decls.
   LookupPtr.setInt(false);
-  NeedToReconcileExternalVisibleStorage = false;
   return LookupPtr.getPointer();
 }
 
@@ -1272,11 +1277,13 @@ DeclContext::lookup(DeclarationName Name) {
     return PrimaryContext->lookup(Name);
 
   if (hasExternalVisibleStorage()) {
+    if (NeedToReconcileExternalVisibleStorage)
+      reconcileExternalVisibleStorage();
+
     StoredDeclsMap *Map = LookupPtr.getPointer();
+
     if (LookupPtr.getInt())
       Map = buildLookup();
-    else if (NeedToReconcileExternalVisibleStorage)
-      reconcileExternalVisibleStorage();
 
     if (!Map)
       Map = CreateStoredDeclsMap(getParentASTContext());

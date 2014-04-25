@@ -363,63 +363,98 @@ static const RecordType *getRecordType(QualType QT) {
   return 0;
 }
 
-
-static bool checkBaseClassIsLockableCallback(const CXXBaseSpecifier *Specifier,
-                                             CXXBasePath &Path, void *Unused) {
-  const RecordType *RT = Specifier->getType()->getAs<RecordType>();
-  return RT->getDecl()->hasAttr<CapabilityAttr>();
-}
-
-
-/// \brief Thread Safety Analysis: Checks that the passed in RecordType
-/// resolves to a lockable object.
-static void checkForLockableRecord(Sema &S, Decl *D, const AttributeList &Attr,
-                                   QualType Ty) {
+static bool checkRecordTypeForCapability(Sema &S, QualType Ty) {
   const RecordType *RT = getRecordType(Ty);
 
-  // Warn if could not get record type for this argument.
-  if (!RT) {
-    S.Diag(Attr.getLoc(), diag::warn_thread_attribute_argument_not_class)
-      << Attr.getName() << Ty;
-    return;
-  }
+  if (!RT)
+    return false;
 
-  // Don't check for lockable if the class hasn't been defined yet.
+  // Don't check for the capability if the class hasn't been defined yet.
   if (RT->isIncompleteType())
-    return;
+    return true;
 
-  // Allow smart pointers to be used as lockable objects.
+  // Allow smart pointers to be used as capability objects.
   // FIXME -- Check the type that the smart pointer points to.
   if (threadSafetyCheckIsSmartPointer(S, RT))
-    return;
+    return true;
 
-  // Check if the type is lockable.
+  // Check if the record itself has a capability.
   RecordDecl *RD = RT->getDecl();
   if (RD->hasAttr<CapabilityAttr>())
-    return;
+    return true;
 
-  // Else check if any base classes are lockable.
+  // Else check if any base classes have a capability.
   if (CXXRecordDecl *CRD = dyn_cast<CXXRecordDecl>(RD)) {
     CXXBasePaths BPaths(false, false);
-    if (CRD->lookupInBases(checkBaseClassIsLockableCallback, 0, BPaths))
-      return;
+    if (CRD->lookupInBases([](const CXXBaseSpecifier *BS, CXXBasePath &P,
+      void *) {
+      return BS->getType()->getAs<RecordType>()
+        ->getDecl()->hasAttr<CapabilityAttr>();
+    }, 0, BPaths))
+      return true;
   }
-
-  S.Diag(Attr.getLoc(), diag::warn_thread_attribute_argument_not_lockable)
-    << Attr.getName() << Ty;
+  return false;
 }
 
-/// \brief Thread Safety Analysis: Checks that all attribute arguments, starting
-/// from Sidx, resolve to a lockable object.
+static bool checkTypedefTypeForCapability(QualType Ty) {
+  const auto *TD = Ty->getAs<TypedefType>();
+  if (!TD)
+    return false;
+
+  TypedefNameDecl *TN = TD->getDecl();
+  if (!TN)
+    return false;
+
+  return TN->hasAttr<CapabilityAttr>();
+}
+
+static bool typeHasCapability(Sema &S, QualType Ty) {
+  if (checkTypedefTypeForCapability(Ty))
+    return true;
+
+  if (checkRecordTypeForCapability(S, Ty))
+    return true;
+
+  return false;
+}
+
+static bool isCapabilityExpr(Sema &S, const Expr *Ex) {
+  // Capability expressions are simple expressions involving the boolean logic
+  // operators &&, || or !, a simple DeclRefExpr, CastExpr or a ParenExpr. Once
+  // a DeclRefExpr is found, its type should be checked to determine whether it
+  // is a capability or not.
+
+  if (const auto *E = dyn_cast<DeclRefExpr>(Ex))
+    return typeHasCapability(S, E->getType());
+  else if (const auto *E = dyn_cast<CastExpr>(Ex))
+    return isCapabilityExpr(S, E->getSubExpr());
+  else if (const auto *E = dyn_cast<ParenExpr>(Ex))
+    return isCapabilityExpr(S, E->getSubExpr());
+  else if (const auto *E = dyn_cast<UnaryOperator>(Ex)) {
+    if (E->getOpcode() == UO_LNot)
+      return isCapabilityExpr(S, E->getSubExpr());
+    return false;
+  } else if (const auto *E = dyn_cast<BinaryOperator>(Ex)) {
+    if (E->getOpcode() == BO_LAnd || E->getOpcode() == BO_LOr)
+      return isCapabilityExpr(S, E->getLHS()) &&
+             isCapabilityExpr(S, E->getRHS());
+    return false;
+  }
+
+  return false;
+}
+
+/// \brief Checks that all attribute arguments, starting from Sidx, resolve to
+/// a capability object.
 /// \param Sidx The attribute argument index to start checking with.
 /// \param ParamIdxOk Whether an argument can be indexing into a function
 /// parameter list.
-static void checkAttrArgsAreLockableObjs(Sema &S, Decl *D,
-                                         const AttributeList &Attr,
-                                         SmallVectorImpl<Expr*> &Args,
-                                         int Sidx = 0,
-                                         bool ParamIdxOk = false) {
-  for(unsigned Idx = Sidx; Idx < Attr.getNumArgs(); ++Idx) {
+static void checkAttrArgsAreCapabilityObjs(Sema &S, Decl *D,
+                                           const AttributeList &Attr,
+                                           SmallVectorImpl<Expr *> &Args,
+                                           int Sidx = 0,
+                                           bool ParamIdxOk = false) {
+  for (unsigned Idx = Sidx; Idx < Attr.getNumArgs(); ++Idx) {
     Expr *ArgExp = Attr.getArgAsExpr(Idx);
 
     if (ArgExp->isTypeDependent()) {
@@ -455,7 +490,7 @@ static void checkAttrArgsAreLockableObjs(Sema &S, Decl *D,
           if (DRE->getDecl()->isCXXInstanceMember())
             ArgTy = DRE->getDecl()->getType();
 
-    // First see if we can just cast to record type, or point to record type.
+    // First see if we can just cast to record type, or pointer to record type.
     const RecordType *RT = getRecordType(ArgTy);
 
     // Now check if we index into a record type function param.
@@ -476,7 +511,13 @@ static void checkAttrArgsAreLockableObjs(Sema &S, Decl *D,
       }
     }
 
-    checkForLockableRecord(S, D, Attr, ArgTy);
+    // If the type does not have a capability, see if the components of the
+    // expression have capabilities. This allows for writing C code where the
+    // capability may be on the type, and the expression is a capability
+    // boolean logic expression. Eg) requires_capability(A || B && !C)
+    if (!typeHasCapability(S, ArgTy) && !isCapabilityExpr(S, ArgExp))
+      S.Diag(Attr.getLoc(), diag::warn_thread_attribute_argument_not_lockable)
+          << Attr.getName() << ArgTy;
 
     Args.push_back(ArgExp);
   }
@@ -505,7 +546,7 @@ static bool checkGuardedByAttrCommon(Sema &S, Decl *D,
                                      Expr* &Arg) {
   SmallVector<Expr*, 1> Args;
   // check that all arguments are lockable objects
-  checkAttrArgsAreLockableObjs(S, D, Attr, Args);
+  checkAttrArgsAreCapabilityObjs(S, D, Attr, Args);
   unsigned Size = Args.size();
   if (Size != 1)
     return false;
@@ -556,7 +597,7 @@ static bool checkAcquireOrderAttrCommon(Sema &S, Decl *D,
   }
 
   // Check that all arguments are lockable objects.
-  checkAttrArgsAreLockableObjs(S, D, Attr, Args);
+  checkAttrArgsAreCapabilityObjs(S, D, Attr, Args);
   if (Args.empty())
     return false;
 
@@ -594,36 +635,9 @@ static bool checkLockFunAttrCommon(Sema &S, Decl *D,
                                    SmallVectorImpl<Expr *> &Args) {
   // zero or more arguments ok
   // check that all arguments are lockable objects
-  checkAttrArgsAreLockableObjs(S, D, Attr, Args, 0, /*ParamIdxOk=*/true);
+  checkAttrArgsAreCapabilityObjs(S, D, Attr, Args, 0, /*ParamIdxOk=*/true);
 
   return true;
-}
-
-static void handleSharedLockFunctionAttr(Sema &S, Decl *D,
-                                         const AttributeList &Attr) {
-  SmallVector<Expr*, 1> Args;
-  if (!checkLockFunAttrCommon(S, D, Attr, Args))
-    return;
-
-  unsigned Size = Args.size();
-  Expr **StartArg = Size == 0 ? 0 : &Args[0];
-  D->addAttr(::new (S.Context)
-             SharedLockFunctionAttr(Attr.getRange(), S.Context, StartArg, Size,
-                                    Attr.getAttributeSpellingListIndex()));
-}
-
-static void handleExclusiveLockFunctionAttr(Sema &S, Decl *D,
-                                            const AttributeList &Attr) {
-  SmallVector<Expr*, 1> Args;
-  if (!checkLockFunAttrCommon(S, D, Attr, Args))
-    return;
-
-  unsigned Size = Args.size();
-  Expr **StartArg = Size == 0 ? 0 : &Args[0];
-  D->addAttr(::new (S.Context)
-             ExclusiveLockFunctionAttr(Attr.getRange(), S.Context,
-                                       StartArg, Size,
-                                       Attr.getAttributeSpellingListIndex()));
 }
 
 static void handleAssertSharedLockAttr(Sema &S, Decl *D,
@@ -667,7 +681,7 @@ static bool checkTryLockFunAttrCommon(Sema &S, Decl *D,
   }
 
   // check that all arguments are lockable objects
-  checkAttrArgsAreLockableObjs(S, D, Attr, Args, 1);
+  checkAttrArgsAreCapabilityObjs(S, D, Attr, Args, 1);
 
   return true;
 }
@@ -698,25 +712,11 @@ static void handleExclusiveTrylockFunctionAttr(Sema &S, Decl *D,
                                           Attr.getAttributeSpellingListIndex()));
 }
 
-static void handleUnlockFunAttr(Sema &S, Decl *D,
-                                const AttributeList &Attr) {
-  // zero or more arguments ok
-  // check that all arguments are lockable objects
-  SmallVector<Expr*, 1> Args;
-  checkAttrArgsAreLockableObjs(S, D, Attr, Args, 0, /*ParamIdxOk=*/true);
-  unsigned Size = Args.size();
-  Expr **StartArg = Size == 0 ? 0 : &Args[0];
-
-  D->addAttr(::new (S.Context)
-             UnlockFunctionAttr(Attr.getRange(), S.Context, StartArg, Size,
-                                Attr.getAttributeSpellingListIndex()));
-}
-
 static void handleLockReturnedAttr(Sema &S, Decl *D,
                                    const AttributeList &Attr) {
   // check that the argument is lockable object
   SmallVector<Expr*, 1> Args;
-  checkAttrArgsAreLockableObjs(S, D, Attr, Args);
+  checkAttrArgsAreCapabilityObjs(S, D, Attr, Args);
   unsigned Size = Args.size();
   if (Size == 0)
     return;
@@ -733,7 +733,7 @@ static void handleLocksExcludedAttr(Sema &S, Decl *D,
 
   // check that all arguments are lockable objects
   SmallVector<Expr*, 1> Args;
-  checkAttrArgsAreLockableObjs(S, D, Attr, Args);
+  checkAttrArgsAreCapabilityObjs(S, D, Attr, Args);
   unsigned Size = Args.size();
   if (Size == 0)
     return;
@@ -2998,6 +2998,26 @@ static void handleNoDebugAttr(Sema &S, Decl *D, const AttributeList &Attr) {
                          Attr.getAttributeSpellingListIndex()));
 }
 
+static void handleAlwaysInlineAttr(Sema &S, Decl *D,
+                                   const AttributeList &Attr) {
+  if (checkAttrMutualExclusion<OptimizeNoneAttr>(S, D, Attr))
+    return;
+
+  D->addAttr(::new (S.Context)
+             AlwaysInlineAttr(Attr.getRange(), S.Context,
+                              Attr.getAttributeSpellingListIndex()));
+}
+
+static void handleOptimizeNoneAttr(Sema &S, Decl *D,
+                                   const AttributeList &Attr) {
+  if (checkAttrMutualExclusion<AlwaysInlineAttr>(S, D, Attr))
+    return;
+
+  D->addAttr(::new (S.Context)
+             OptimizeNoneAttr(Attr.getRange(), S.Context,
+                              Attr.getAttributeSpellingListIndex()));
+}
+
 static void handleGlobalAttr(Sema &S, Decl *D, const AttributeList &Attr) {
   FunctionDecl *FD = cast<FunctionDecl>(D);
   if (!FD->getReturnType()->isVoidType()) {
@@ -3912,12 +3932,7 @@ static void handleAssertCapabilityAttr(Sema &S, Decl *D,
 static void handleAcquireCapabilityAttr(Sema &S, Decl *D,
                                         const AttributeList &Attr) {
   SmallVector<Expr*, 1> Args;
-  if (!checkAttributeAtLeastNumArgs(S, Attr, 1))
-    return;
-
-  // Check that all arguments are lockable objects.
-  checkAttrArgsAreLockableObjs(S, D, Attr, Args);
-  if (Args.empty())
+  if (!checkLockFunAttrCommon(S, D, Attr, Args))
     return;
 
   D->addAttr(::new (S.Context) AcquireCapabilityAttr(Attr.getRange(),
@@ -3942,19 +3957,13 @@ static void handleTryAcquireCapabilityAttr(Sema &S, Decl *D,
 
 static void handleReleaseCapabilityAttr(Sema &S, Decl *D,
                                         const AttributeList &Attr) {
-  SmallVector<Expr*, 1> Args;
-  if (!checkAttributeAtLeastNumArgs(S, Attr, 1))
-    return;
-
   // Check that all arguments are lockable objects.
-  checkAttrArgsAreLockableObjs(S, D, Attr, Args);
-  if (Args.empty())
-    return;
+  SmallVector<Expr *, 1> Args;
+  checkAttrArgsAreCapabilityObjs(S, D, Attr, Args, 0, true);
 
-  D->addAttr(::new (S.Context) ReleaseCapabilityAttr(Attr.getRange(),
-                                                     S.Context,
-                                                     Args.data(), Args.size(),
-                                        Attr.getAttributeSpellingListIndex()));
+  D->addAttr(::new (S.Context) ReleaseCapabilityAttr(
+      Attr.getRange(), S.Context, Args.data(), Args.size(),
+      Attr.getAttributeSpellingListIndex()));
 }
 
 static void handleRequiresCapabilityAttr(Sema &S, Decl *D,
@@ -3964,7 +3973,7 @@ static void handleRequiresCapabilityAttr(Sema &S, Decl *D,
 
   // check that all arguments are lockable objects
   SmallVector<Expr*, 1> Args;
-  checkAttrArgsAreLockableObjs(S, D, Attr, Args);
+  checkAttrArgsAreCapabilityObjs(S, D, Attr, Args);
   if (Args.empty())
     return;
 
@@ -4079,7 +4088,7 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
     handleAlignedAttr(S, D, Attr);
     break;
   case AttributeList::AT_AlwaysInline:
-    handleSimpleAttribute<AlwaysInlineAttr>(S, D, Attr);
+    handleAlwaysInlineAttr(S, D, Attr);
     break;
   case AttributeList::AT_AnalyzerNoReturn:
     handleAnalyzerNoReturnAttr(S, D, Attr);
@@ -4122,6 +4131,9 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
     break;
   case AttributeList::AT_MinSize:
     handleSimpleAttribute<MinSizeAttr>(S, D, Attr);
+    break;
+  case AttributeList::AT_OptimizeNone:
+    handleOptimizeNoneAttr(S, D, Attr);
     break;
   case AttributeList::AT_Format:
     handleFormatAttr(S, D, Attr);
@@ -4417,9 +4429,6 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
   case AttributeList::AT_PtGuardedBy:
     handlePtGuardedByAttr(S, D, Attr);
     break;
-  case AttributeList::AT_ExclusiveLockFunction:
-    handleExclusiveLockFunctionAttr(S, D, Attr);
-    break;
   case AttributeList::AT_ExclusiveTrylockFunction:
     handleExclusiveTrylockFunctionAttr(S, D, Attr);
     break;
@@ -4429,14 +4438,8 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
   case AttributeList::AT_LocksExcluded:
     handleLocksExcludedAttr(S, D, Attr);
     break;
-  case AttributeList::AT_SharedLockFunction:
-    handleSharedLockFunctionAttr(S, D, Attr);
-    break;
   case AttributeList::AT_SharedTrylockFunction:
     handleSharedTrylockFunctionAttr(S, D, Attr);
-    break;
-  case AttributeList::AT_UnlockFunction:
-    handleUnlockFunAttr(S, D, Attr);
     break;
   case AttributeList::AT_AcquiredBefore:
     handleAcquiredBeforeAttr(S, D, Attr);
