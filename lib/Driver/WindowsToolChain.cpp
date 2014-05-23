@@ -46,7 +46,7 @@ Tool *Windows::buildAssembler() const {
   if (getTriple().isOSBinFormatMachO())
     return new tools::darwin::Assemble(*this);
   getDriver().Diag(clang::diag::err_no_external_assembler);
-  return NULL;
+  return nullptr;
 }
 
 bool Windows::IsIntegratedAssemblerDefault() const {
@@ -293,6 +293,7 @@ void Windows::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
   if (DriverArgs.hasArg(options::OPT_nostdlibinc))
     return;
 
+#ifdef _MSC_VER
   // Honor %INCLUDE%. It should know essential search paths with vcvarsall.bat.
   if (const char *cl_include_dir = getenv("INCLUDE")) {
     SmallVector<StringRef, 8> Dirs;
@@ -304,7 +305,6 @@ void Windows::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
       return;
   }
 
-#ifdef _MSC_VER
   std::string VSDir;
   std::string WindowsSDKDir;
 
