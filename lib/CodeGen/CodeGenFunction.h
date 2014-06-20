@@ -1647,7 +1647,8 @@ public:
                              llvm::Value *This);
 
   void EmitNewArrayInitializer(const CXXNewExpr *E, QualType elementType,
-                               llvm::Value *NewPtr, llvm::Value *NumElements);
+                               llvm::Value *NewPtr, llvm::Value *NumElements,
+                               llvm::Value *AllocSizeWithoutCookie);
 
   void EmitCXXTemporary(const CXXTemporary *Temporary, QualType TempType,
                         llvm::Value *Ptr);
@@ -1657,6 +1658,9 @@ public:
 
   void EmitDeleteCall(const FunctionDecl *DeleteFD, llvm::Value *Ptr,
                       QualType DeleteTy);
+
+  RValue EmitBuiltinNewDeleteCall(const FunctionProtoType *Type,
+                                  const Expr *Arg, bool IsDelete);
 
   llvm::Value* EmitCXXTypeidExpr(const CXXTypeidExpr *E);
   llvm::Value *EmitDynamicCast(llvm::Value *V, const CXXDynamicCastExpr *DCE);
@@ -1856,9 +1860,14 @@ public:
   void EmitGotoStmt(const GotoStmt &S);
   void EmitIndirectGotoStmt(const IndirectGotoStmt &S);
   void EmitIfStmt(const IfStmt &S);
-  void EmitWhileStmt(const WhileStmt &S);
-  void EmitDoStmt(const DoStmt &S);
-  void EmitForStmt(const ForStmt &S);
+
+  void EmitCondBrHints(llvm::LLVMContext &Context, llvm::BranchInst *CondBr,
+                       const ArrayRef<const Attr *> &Attrs);
+  void EmitWhileStmt(const WhileStmt &S,
+                     const ArrayRef<const Attr *> &Attrs = None);
+  void EmitDoStmt(const DoStmt &S, const ArrayRef<const Attr *> &Attrs = None);
+  void EmitForStmt(const ForStmt &S,
+                   const ArrayRef<const Attr *> &Attrs = None);
   void EmitReturnStmt(const ReturnStmt &S);
   void EmitDeclStmt(const DeclStmt &S);
   void EmitBreakStmt(const BreakStmt &S);
@@ -1882,7 +1891,8 @@ public:
 
   void EmitCXXTryStmt(const CXXTryStmt &S);
   void EmitSEHTryStmt(const SEHTryStmt &S);
-  void EmitCXXForRangeStmt(const CXXForRangeStmt &S);
+  void EmitCXXForRangeStmt(const CXXForRangeStmt &S,
+                           const ArrayRef<const Attr *> &Attrs = None);
 
   llvm::Function *EmitCapturedStmt(const CapturedStmt &S, CapturedRegionKind K);
   llvm::Function *GenerateCapturedStmtFunction(const CapturedDecl *CD,
@@ -1892,6 +1902,7 @@ public:
 
   void EmitOMPParallelDirective(const OMPParallelDirective &S);
   void EmitOMPSimdDirective(const OMPSimdDirective &S);
+  void EmitOMPForDirective(const OMPForDirective &S);
 
   //===--------------------------------------------------------------------===//
   //                         LValue Expression Emission
@@ -2201,8 +2212,6 @@ public:
                                              const llvm::CmpInst::Predicate Fp,
                                              const llvm::CmpInst::Predicate Ip,
                                              const llvm::Twine &Name = "");
-  llvm::Value *EmitAArch64CompareBuiltinExpr(llvm::Value *Op, llvm::Type *Ty);
-  llvm::Value *EmitAArch64BuiltinExpr(unsigned BuiltinID, const CallExpr *E);
   llvm::Value *EmitARMBuiltinExpr(unsigned BuiltinID, const CallExpr *E);
 
   llvm::Value *EmitCommonNeonBuiltinExpr(unsigned BuiltinID,
@@ -2228,14 +2237,14 @@ public:
   llvm::Value *EmitConcatVectors(llvm::Value *Lo, llvm::Value *Hi,
                                  llvm::Type *ArgTy);
   llvm::Value *EmitExtractHigh(llvm::Value *In, llvm::Type *ResTy);
-  // Helper functions for EmitARM64BuiltinExpr.
+  // Helper functions for EmitAArch64BuiltinExpr.
   llvm::Value *vectorWrapScalar8(llvm::Value *Op);
   llvm::Value *vectorWrapScalar16(llvm::Value *Op);
   llvm::Value *emitVectorWrappedScalar8Intrinsic(
       unsigned Int, SmallVectorImpl<llvm::Value *> &Ops, const char *Name);
   llvm::Value *emitVectorWrappedScalar16Intrinsic(
       unsigned Int, SmallVectorImpl<llvm::Value *> &Ops, const char *Name);
-  llvm::Value *EmitARM64BuiltinExpr(unsigned BuiltinID, const CallExpr *E);
+  llvm::Value *EmitAArch64BuiltinExpr(unsigned BuiltinID, const CallExpr *E);
   llvm::Value *EmitNeon64Call(llvm::Function *F,
                               llvm::SmallVectorImpl<llvm::Value *> &O,
                               const char *name);
@@ -2642,7 +2651,8 @@ public:
 
   void EmitCallArgs(CallArgList &Args, ArrayRef<QualType> ArgTypes,
                     CallExpr::const_arg_iterator ArgBeg,
-                    CallExpr::const_arg_iterator ArgEnd, bool ForceColumnInfo);
+                    CallExpr::const_arg_iterator ArgEnd,
+                    bool ForceColumnInfo = false);
 
 private:
   const TargetCodeGenInfo &getTargetHooks() const {

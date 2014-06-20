@@ -11,6 +11,7 @@
 #include "InputInfo.h"
 #include "ToolChains.h"
 #include "clang/Basic/Version.h"
+#include "clang/Config/config.h"
 #include "clang/Driver/Action.h"
 #include "clang/Driver/Compilation.h"
 #include "clang/Driver/DriverDiagnostic.h"
@@ -20,6 +21,7 @@
 #include "clang/Driver/ToolChain.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Option/Arg.h"
@@ -32,14 +34,11 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/PrettyStackTrace.h"
+#include "llvm/Support/Process.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/raw_ostream.h"
 #include <map>
 #include <memory>
-
-// FIXME: It would prevent us from including llvm-config.h
-// if config.h were included before system_error.h.
-#include "clang/Config/config.h"
 
 using namespace clang::driver;
 using namespace clang;
@@ -155,9 +154,10 @@ const {
   Arg *PhaseArg = nullptr;
   phases::ID FinalPhase;
 
-  // -{E,M,MM} and /P only run the preprocessor.
+  // -{E,EP,P,M,MM} only run the preprocessor.
   if (CCCIsCPP() ||
       (PhaseArg = DAL.getLastArg(options::OPT_E)) ||
+      (PhaseArg = DAL.getLastArg(options::OPT__SLASH_EP)) ||
       (PhaseArg = DAL.getLastArg(options::OPT_M, options::OPT_MM)) ||
       (PhaseArg = DAL.getLastArg(options::OPT__SLASH_P))) {
     FinalPhase = phases::Preprocess;
@@ -929,6 +929,35 @@ void Driver::BuildUniversalActions(const ToolChain &TC,
   }
 }
 
+/// \brief Check whether the file referenced by Value exists in the LIB
+/// environment variable.
+static bool ExistsInLibDir(StringRef Value) {
+  llvm::Optional<std::string> OptPath = llvm::sys::Process::GetEnv("LIB");
+  if (!OptPath.hasValue())
+    return false;
+
+#ifdef LLVM_ON_WIN32
+  const StringRef PathSeparators = ";";
+#else
+  const StringRef PathSeparators = ":";
+#endif
+
+  SmallVector<StringRef, 8> LibDirs;
+  llvm::SplitString(OptPath.getValue(), LibDirs, PathSeparators);
+
+  for (const auto &LibDir : LibDirs) {
+    if (LibDir.empty())
+      continue;
+
+    SmallString<128> FilePath(LibDir);
+    llvm::sys::path::append(FilePath, Value);
+    if (llvm::sys::fs::exists(Twine(FilePath)))
+      return true;
+  }
+
+  return false;
+}
+
 /// \brief Check that the file referenced by Value exists. If it doesn't,
 /// issue a diagnostic and return false.
 static bool DiagnoseInputExistence(const Driver &D, const DerivedArgList &Args,
@@ -950,6 +979,9 @@ static bool DiagnoseInputExistence(const Driver &D, const DerivedArgList &Args,
   }
 
   if (llvm::sys::fs::exists(Twine(Path)))
+    return true;
+
+  if (D.IsCLMode() && ExistsInLibDir(Value))
     return true;
 
   D.Diag(clang::diag::err_drv_no_such_file) << Path.str();
@@ -1617,7 +1649,10 @@ const char *Driver::GetNamedOutputPath(Compilation &C,
   if (C.getArgs().hasArg(options::OPT__SLASH_P)) {
     assert(AtTopLevel && isa<PreprocessJobAction>(JA));
     StringRef BaseName = llvm::sys::path::filename(BaseInput);
-    return C.addResultFile(MakeCLOutputFilename(C.getArgs(), "", BaseName,
+    StringRef NameArg;
+    if (Arg *A = C.getArgs().getLastArg(options::OPT__SLASH_Fi))
+      NameArg = A->getValue();
+    return C.addResultFile(MakeCLOutputFilename(C.getArgs(), NameArg, BaseName,
                                                 types::TY_PP_C), &JA);
   }
 
@@ -1826,8 +1861,7 @@ std::string Driver::GetProgramPath(const char *Name,
 std::string Driver::GetTemporaryPath(StringRef Prefix, const char *Suffix)
   const {
   SmallString<128> Path;
-  llvm::error_code EC =
-      llvm::sys::fs::createTemporaryFile(Prefix, Suffix, Path);
+  std::error_code EC = llvm::sys::fs::createTemporaryFile(Prefix, Suffix, Path);
   if (EC) {
     Diag(clang::diag::err_unable_to_make_temp) << EC.message();
     return "";

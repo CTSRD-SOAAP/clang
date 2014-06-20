@@ -940,9 +940,8 @@ Value *ScalarExprEmitter::VisitShuffleVectorExpr(ShuffleVectorExpr *E) {
                                                   MTy->getNumElements());
     Value* NewV = llvm::UndefValue::get(RTy);
     for (unsigned i = 0, e = MTy->getNumElements(); i != e; ++i) {
-      Value *IIndx = Builder.getInt32(i);
+      Value *IIndx = llvm::ConstantInt::get(CGF.SizeTy, i);
       Value *Indx = Builder.CreateExtractElement(Mask, IIndx, "shuf_idx");
-      Indx = Builder.CreateZExt(Indx, CGF.Int32Ty, "idx_zext");
 
       Value *VExt = Builder.CreateExtractElement(LHS, Indx, "shuf_elt");
       NewV = Builder.CreateInsertElement(NewV, VExt, IIndx, "shuf_ins");
@@ -1073,8 +1072,6 @@ Value *ScalarExprEmitter::VisitArraySubscriptExpr(ArraySubscriptExpr *E) {
   if (CGF.SanOpts->ArrayBounds)
     CGF.EmitBoundsCheck(E, E->getBase(), Idx, IdxTy, /*Accessed*/true);
 
-  bool IdxSigned = IdxTy->isSignedIntegerOrEnumerationType();
-  Idx = Builder.CreateIntCast(Idx, CGF.Int32Ty, IdxSigned, "vecidxcast");
   return Builder.CreateExtractElement(Base, Idx, "vecext");
 }
 
@@ -1735,11 +1732,12 @@ ScalarExprEmitter::EmitScalarPrePostIncDec(const UnaryOperator *E, LValue LV,
   if (atomicPHI) {
     llvm::BasicBlock *opBB = Builder.GetInsertBlock();
     llvm::BasicBlock *contBB = CGF.createBasicBlock("atomic_cont", CGF.CurFn);
-    llvm::Value *old = Builder.CreateAtomicCmpXchg(
+    llvm::Value *pair = Builder.CreateAtomicCmpXchg(
         LV.getAddress(), atomicPHI, CGF.EmitToMemory(value, type),
         llvm::SequentiallyConsistent, llvm::SequentiallyConsistent);
+    llvm::Value *old = Builder.CreateExtractValue(pair, 0);
+    llvm::Value *success = Builder.CreateExtractValue(pair, 1);
     atomicPHI->addIncoming(old, opBB);
-    llvm::Value *success = Builder.CreateICmpEQ(old, atomicPHI);
     Builder.CreateCondBr(success, contBB, opBB);
     Builder.SetInsertPoint(contBB);
     return isPre ? value : input;
@@ -2078,11 +2076,12 @@ LValue ScalarExprEmitter::EmitCompoundAssignLValue(
   if (atomicPHI) {
     llvm::BasicBlock *opBB = Builder.GetInsertBlock();
     llvm::BasicBlock *contBB = CGF.createBasicBlock("atomic_cont", CGF.CurFn);
-    llvm::Value *old = Builder.CreateAtomicCmpXchg(
+    llvm::Value *pair = Builder.CreateAtomicCmpXchg(
         LHSLV.getAddress(), atomicPHI, CGF.EmitToMemory(Result, LHSTy),
         llvm::SequentiallyConsistent, llvm::SequentiallyConsistent);
+    llvm::Value *old = Builder.CreateExtractValue(pair, 0);
+    llvm::Value *success = Builder.CreateExtractValue(pair, 1);
     atomicPHI->addIncoming(old, opBB);
-    llvm::Value *success = Builder.CreateICmpEQ(old, atomicPHI);
     Builder.CreateCondBr(success, contBB, opBB);
     Builder.SetInsertPoint(contBB);
     return LHSLV;
