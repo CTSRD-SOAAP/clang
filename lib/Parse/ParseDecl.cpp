@@ -238,7 +238,10 @@ IdentifierLoc *Parser::ParseIdentifierLoc() {
 void Parser::ParseAttributeWithTypeArg(IdentifierInfo &AttrName,
                                        SourceLocation AttrNameLoc,
                                        ParsedAttributes &Attrs,
-                                       SourceLocation *EndLoc) {
+                                       SourceLocation *EndLoc,
+                                       IdentifierInfo *ScopeName,
+                                       SourceLocation ScopeLoc,
+                                       AttributeList::Syntax Syntax) {
   BalancedDelimiterTracker Parens(*this, tok::l_paren);
   Parens.consumeOpen();
 
@@ -255,10 +258,10 @@ void Parser::ParseAttributeWithTypeArg(IdentifierInfo &AttrName,
   if (T.isUsable())
     Attrs.addNewTypeAttr(&AttrName,
                          SourceRange(AttrNameLoc, Parens.getCloseLocation()),
-                         nullptr, AttrNameLoc, T.get(), AttributeList::AS_GNU);
+                         ScopeName, ScopeLoc, T.get(), Syntax);
   else
     Attrs.addNew(&AttrName, SourceRange(AttrNameLoc, Parens.getCloseLocation()),
-                 nullptr, AttrNameLoc, nullptr, 0, AttributeList::AS_GNU);
+                 ScopeName, ScopeLoc, nullptr, 0, Syntax);
 }
 
 unsigned Parser::ParseAttributeArgsCommon(
@@ -338,28 +341,21 @@ void Parser::ParseGNUAttributeArgs(IdentifierInfo *AttrName,
   AttributeList::Kind AttrKind =
       AttributeList::getKind(AttrName, ScopeName, Syntax);
 
-  // Availability attributes have their own grammar.
-  // FIXME: All these cases fail to pass in the syntax and scope, and might be
-  // written as C++11 gnu:: attributes.
   if (AttrKind == AttributeList::AT_Availability) {
-    ParseAvailabilityAttribute(*AttrName, AttrNameLoc, Attrs, EndLoc);
+    ParseAvailabilityAttribute(*AttrName, AttrNameLoc, Attrs, EndLoc, ScopeName,
+                               ScopeLoc, Syntax);
     return;
-  }
-
-  if (AttrKind == AttributeList::AT_ObjCBridgeRelated) {
-    ParseObjCBridgeRelatedAttribute(*AttrName, AttrNameLoc, Attrs, EndLoc);
+  } else if (AttrKind == AttributeList::AT_ObjCBridgeRelated) {
+    ParseObjCBridgeRelatedAttribute(*AttrName, AttrNameLoc, Attrs, EndLoc,
+                                    ScopeName, ScopeLoc, Syntax);
     return;
-  }
-
-  // Type safety attributes have their own grammar.
-  if (AttrKind == AttributeList::AT_TypeTagForDatatype) {
-    ParseTypeTagForDatatypeAttribute(*AttrName, AttrNameLoc, Attrs, EndLoc);
+  } else if (AttrKind == AttributeList::AT_TypeTagForDatatype) {
+    ParseTypeTagForDatatypeAttribute(*AttrName, AttrNameLoc, Attrs, EndLoc,
+                                     ScopeName, ScopeLoc, Syntax);
     return;
-  }
-
-  // Some attributes expect solely a type parameter.
-  if (attributeIsTypeArgAttr(*AttrName)) {
-    ParseAttributeWithTypeArg(*AttrName, AttrNameLoc, Attrs, EndLoc);
+  } else if (attributeIsTypeArgAttr(*AttrName)) {
+    ParseAttributeWithTypeArg(*AttrName, AttrNameLoc, Attrs, EndLoc, ScopeName,
+                              ScopeLoc, Syntax);
     return;
   }
 
@@ -763,7 +759,10 @@ VersionTuple Parser::ParseVersionTuple(SourceRange &Range) {
 void Parser::ParseAvailabilityAttribute(IdentifierInfo &Availability,
                                         SourceLocation AvailabilityLoc,
                                         ParsedAttributes &attrs,
-                                        SourceLocation *endLoc) {
+                                        SourceLocation *endLoc,
+                                        IdentifierInfo *ScopeName,
+                                        SourceLocation ScopeLoc,
+                                        AttributeList::Syntax Syntax) {
   enum { Introduced, Deprecated, Obsoleted, Unknown };
   AvailabilityChange Changes[Unknown];
   ExprResult MessageExpr;
@@ -826,13 +825,24 @@ void Parser::ParseAvailabilityAttribute(IdentifierInfo &Availability,
     }
     ConsumeToken();
     if (Keyword == Ident_message) {
-      if (Tok.isNot(tok::string_literal)) { // Also reject wide string literals.
+      if (Tok.isNot(tok::string_literal)) {
         Diag(Tok, diag::err_expected_string_literal)
           << /*Source='availability attribute'*/2;
         SkipUntil(tok::r_paren, StopAtSemi);
         return;
       }
       MessageExpr = ParseStringLiteralExpression();
+      // Also reject wide string literals.
+      if (StringLiteral *MessageStringLiteral =
+              cast_or_null<StringLiteral>(MessageExpr.get())) {
+        if (MessageStringLiteral->getCharByteWidth() != 1) {
+          Diag(MessageStringLiteral->getSourceRange().getBegin(),
+               diag::err_expected_string_literal)
+            << /*Source='availability attribute'*/ 2;
+          SkipUntil(tok::r_paren, StopAtSemi);
+          return;
+        }
+      }
       break;
     }
 
@@ -901,13 +911,13 @@ void Parser::ParseAvailabilityAttribute(IdentifierInfo &Availability,
   // Record this attribute
   attrs.addNew(&Availability,
                SourceRange(AvailabilityLoc, T.getCloseLocation()),
-               nullptr, AvailabilityLoc,
+               ScopeName, ScopeLoc,
                Platform,
                Changes[Introduced],
                Changes[Deprecated],
                Changes[Obsoleted],
                UnavailableLoc, MessageExpr.get(),
-               AttributeList::AS_GNU);
+               Syntax);
 }
 
 /// \brief Parse the contents of the "objc_bridge_related" attribute.
@@ -924,7 +934,10 @@ void Parser::ParseAvailabilityAttribute(IdentifierInfo &Availability,
 void Parser::ParseObjCBridgeRelatedAttribute(IdentifierInfo &ObjCBridgeRelated,
                                 SourceLocation ObjCBridgeRelatedLoc,
                                 ParsedAttributes &attrs,
-                                SourceLocation *endLoc) {
+                                SourceLocation *endLoc,
+                                IdentifierInfo *ScopeName,
+                                SourceLocation ScopeLoc,
+                                AttributeList::Syntax Syntax) {
   // Opening '('.
   BalancedDelimiterTracker T(*this, tok::l_paren);
   if (T.consumeOpen()) {
@@ -983,11 +996,11 @@ void Parser::ParseObjCBridgeRelatedAttribute(IdentifierInfo &ObjCBridgeRelated,
   // Record this attribute
   attrs.addNew(&ObjCBridgeRelated,
                SourceRange(ObjCBridgeRelatedLoc, T.getCloseLocation()),
-               nullptr, ObjCBridgeRelatedLoc,
+               ScopeName, ScopeLoc,
                RelatedClass,
                ClassMethod,
                InstanceMethod,
-               AttributeList::AS_GNU);
+               Syntax);
 }
 
 // Late Parsed Attributes:
@@ -1139,7 +1152,10 @@ void Parser::ParseLexedAttribute(LateParsedAttribute &LA,
 void Parser::ParseTypeTagForDatatypeAttribute(IdentifierInfo &AttrName,
                                               SourceLocation AttrNameLoc,
                                               ParsedAttributes &Attrs,
-                                              SourceLocation *EndLoc) {
+                                              SourceLocation *EndLoc,
+                                              IdentifierInfo *ScopeName,
+                                              SourceLocation ScopeLoc,
+                                              AttributeList::Syntax Syntax) {
   assert(Tok.is(tok::l_paren) && "Attribute arg list not starting with '('");
 
   BalancedDelimiterTracker T(*this, tok::l_paren);
@@ -1186,10 +1202,9 @@ void Parser::ParseTypeTagForDatatypeAttribute(IdentifierInfo &AttrName,
   }
 
   if (!T.consumeClose()) {
-    Attrs.addNewTypeTagForDatatype(&AttrName, AttrNameLoc, nullptr, AttrNameLoc,
+    Attrs.addNewTypeTagForDatatype(&AttrName, AttrNameLoc, ScopeName, ScopeLoc,
                                    ArgumentKind, MatchingCType.get(),
-                                   LayoutCompatible, MustBeNull,
-                                   AttributeList::AS_GNU);
+                                   LayoutCompatible, MustBeNull, Syntax);
   }
 
   if (EndLoc)
@@ -2715,23 +2730,22 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
       // typedef-name
     case tok::kw_decltype:
     case tok::identifier: {
-      // In C++, check to see if this is a scope specifier like foo::bar::, if
-      // so handle it as such.  This is important for ctor parsing.
-      if (getLangOpts().CPlusPlus) {
-        if (TryAnnotateCXXScopeToken(EnteringContext)) {
-          if (!DS.hasTypeSpecifier())
-            DS.SetTypeSpecError();
-          goto DoneWithDeclSpec;
-        }
-        if (!Tok.is(tok::identifier))
-          continue;
-      }
-
       // This identifier can only be a typedef name if we haven't already seen
       // a type-specifier.  Without this check we misparse:
       //  typedef int X; struct Y { short X; };  as 'short int'.
       if (DS.hasTypeSpecifier())
         goto DoneWithDeclSpec;
+
+      // In C++, check to see if this is a scope specifier like foo::bar::, if
+      // so handle it as such.  This is important for ctor parsing.
+      if (getLangOpts().CPlusPlus) {
+        if (TryAnnotateCXXScopeToken(EnteringContext)) {
+          DS.SetTypeSpecError();
+          goto DoneWithDeclSpec;
+        }
+        if (!Tok.is(tok::identifier))
+          continue;
+      }
 
       // Check for need to substitute AltiVec keyword tokens.
       if (TryAltiVecToken(DS, Loc, PrevSpec, DiagID, isInvalid))
@@ -4529,7 +4543,9 @@ void Parser::ParseDeclaratorInternal(Declarator &D,
   // Member pointers get special handling, since there's no place for the
   // scope spec in the generic path below.
   if (getLangOpts().CPlusPlus &&
-      (Tok.is(tok::coloncolon) || Tok.is(tok::identifier) ||
+      (Tok.is(tok::coloncolon) ||
+       (Tok.is(tok::identifier) &&
+        (NextToken().is(tok::coloncolon) || NextToken().is(tok::less))) ||
        Tok.is(tok::annot_cxxscope))) {
     bool EnteringContext = D.getContext() == Declarator::FileContext ||
                            D.getContext() == Declarator::MemberContext;
@@ -4664,6 +4680,19 @@ void Parser::ParseDeclaratorInternal(Declarator &D,
   }
 }
 
+// When correcting from misplaced brackets before the identifier, the location
+// is saved inside the declarator so that other diagnostic messages can use
+// them.  This extracts and returns that location, or returns the provided
+// location if a stored location does not exist.
+static SourceLocation getMissingDeclaratorIdLoc(Declarator &D,
+                                                SourceLocation Loc) {
+  if (D.getName().StartLocation.isInvalid() &&
+      D.getName().EndLocation.isValid())
+    return D.getName().EndLocation;
+
+  return Loc;
+}
+
 /// ParseDirectDeclarator
 ///       direct-declarator: [C99 6.7.5]
 /// [C99]   identifier
@@ -4709,6 +4738,14 @@ void Parser::ParseDirectDeclarator(Declarator &D) {
   DeclaratorScopeObj DeclScopeObj(*this, D.getCXXScopeSpec());
 
   if (getLangOpts().CPlusPlus && D.mayHaveIdentifier()) {
+    // Don't parse FOO:BAR as if it were a typo for FOO::BAR inside a class, in
+    // this context it is a bitfield. Also in range-based for statement colon
+    // may delimit for-range-declaration.
+    ColonProtectionRAIIObject X(*this,
+                                D.getContext() == Declarator::MemberContext ||
+                                    (D.getContext() == Declarator::ForContext &&
+                                     getLangOpts().CPlusPlus11));
+
     // ParseDeclaratorInternal might already have parsed the scope.
     if (D.getCXXScopeSpec().isEmpty()) {
       bool EnteringContext = D.getContext() == Declarator::FileContext ||
@@ -4841,11 +4878,14 @@ void Parser::ParseDirectDeclarator(Declarator &D) {
   } else {
     if (Tok.getKind() == tok::annot_pragma_parser_crash)
       LLVM_BUILTIN_TRAP;
-    if (D.getContext() == Declarator::MemberContext)
-      Diag(Tok, diag::err_expected_member_name_or_semi)
+    if (Tok.is(tok::l_square))
+      return ParseMisplacedBracketDeclarator(D);
+    if (D.getContext() == Declarator::MemberContext) {
+      Diag(getMissingDeclaratorIdLoc(D, Tok.getLocation()),
+           diag::err_expected_member_name_or_semi)
           << (D.getDeclSpec().isEmpty() ? SourceRange()
                                         : D.getDeclSpec().getSourceRange());
-    else if (getLangOpts().CPlusPlus) {
+    } else if (getLangOpts().CPlusPlus) {
       if (Tok.is(tok::period) || Tok.is(tok::arrow))
         Diag(Tok, diag::err_invalid_operator_on_type) << Tok.is(tok::arrow);
       else {
@@ -4854,11 +4894,15 @@ void Parser::ParseDirectDeclarator(Declarator &D) {
           Diag(PP.getLocForEndOfToken(Loc), diag::err_expected_unqualified_id)
               << getLangOpts().CPlusPlus;
         else
-          Diag(Tok, diag::err_expected_unqualified_id)
+          Diag(getMissingDeclaratorIdLoc(D, Tok.getLocation()),
+               diag::err_expected_unqualified_id)
               << getLangOpts().CPlusPlus;
       }
-    } else
-      Diag(Tok, diag::err_expected_either) << tok::identifier << tok::l_paren;
+    } else {
+      Diag(getMissingDeclaratorIdLoc(D, Tok.getLocation()),
+           diag::err_expected_either)
+          << tok::identifier << tok::l_paren;
+    }
     D.SetIdentifier(nullptr, Tok.getLocation());
     D.setInvalidType(true);
   }
@@ -5562,6 +5606,96 @@ void Parser::ParseBracketDeclarator(Declarator &D) {
                                           T.getOpenLocation(),
                                           T.getCloseLocation()),
                 attrs, T.getCloseLocation());
+}
+
+/// Diagnose brackets before an identifier.
+void Parser::ParseMisplacedBracketDeclarator(Declarator &D) {
+  assert(Tok.is(tok::l_square) && "Missing opening bracket");
+  assert(!D.mayOmitIdentifier() && "Declarator cannot omit identifier");
+
+  SourceLocation StartBracketLoc = Tok.getLocation();
+  Declarator TempDeclarator(D.getDeclSpec(), D.getContext());
+
+  while (Tok.is(tok::l_square)) {
+    ParseBracketDeclarator(TempDeclarator);
+  }
+
+  // Stuff the location of the start of the brackets into the Declarator.
+  // The diagnostics from ParseDirectDeclarator will make more sense if
+  // they use this location instead.
+  if (Tok.is(tok::semi))
+    D.getName().EndLocation = StartBracketLoc;
+
+  SourceLocation SuggestParenLoc = Tok.getLocation();
+
+  // Now that the brackets are removed, try parsing the declarator again.
+  ParseDeclaratorInternal(D, &Parser::ParseDirectDeclarator);
+
+  // Something went wrong parsing the brackets, in which case,
+  // ParseBracketDeclarator has emitted an error, and we don't need to emit
+  // one here.
+  if (TempDeclarator.getNumTypeObjects() == 0)
+    return;
+
+  // Determine if parens will need to be suggested in the diagnostic.
+  bool NeedParens = false;
+  if (D.getNumTypeObjects() != 0) {
+    switch (D.getTypeObject(D.getNumTypeObjects() - 1).Kind) {
+    case DeclaratorChunk::Pointer:
+    case DeclaratorChunk::Reference:
+    case DeclaratorChunk::BlockPointer:
+    case DeclaratorChunk::MemberPointer:
+      NeedParens = true;
+      break;
+    case DeclaratorChunk::Array:
+    case DeclaratorChunk::Function:
+    case DeclaratorChunk::Paren:
+      break;
+    }
+  }
+
+  if (NeedParens) {
+    // Create a DeclaratorChunk for the inserted parens.
+    ParsedAttributes attrs(AttrFactory);
+    SourceLocation EndLoc = PP.getLocForEndOfToken(D.getLocEnd());
+    D.AddTypeInfo(DeclaratorChunk::getParen(SuggestParenLoc, EndLoc), attrs,
+                  SourceLocation());
+  }
+
+  // Adding back the bracket info to the end of the Declarator.
+  for (unsigned i = 0, e = TempDeclarator.getNumTypeObjects(); i < e; ++i) {
+    const DeclaratorChunk &Chunk = TempDeclarator.getTypeObject(i);
+    ParsedAttributes attrs(AttrFactory);
+    attrs.set(Chunk.Common.AttrList);
+    D.AddTypeInfo(Chunk, attrs, SourceLocation());
+  }
+
+  // The missing identifier would have been diagnosed in ParseDirectDeclarator.
+  // If parentheses are required, always suggest them.
+  if (!D.getIdentifier() && !NeedParens)
+    return;
+
+  SourceLocation EndBracketLoc = TempDeclarator.getLocEnd();
+
+  // Generate the move bracket error message.
+  SourceRange BracketRange(StartBracketLoc, EndBracketLoc);
+  SourceLocation EndLoc = PP.getLocForEndOfToken(D.getLocEnd());
+
+  if (NeedParens) {
+    Diag(EndLoc, diag::err_brackets_go_after_unqualified_id)
+        << getLangOpts().CPlusPlus
+        << FixItHint::CreateInsertion(SuggestParenLoc, "(")
+        << FixItHint::CreateInsertion(EndLoc, ")")
+        << FixItHint::CreateInsertionFromRange(
+               EndLoc, CharSourceRange(BracketRange, true))
+        << FixItHint::CreateRemoval(BracketRange);
+  } else {
+    Diag(EndLoc, diag::err_brackets_go_after_unqualified_id)
+        << getLangOpts().CPlusPlus
+        << FixItHint::CreateInsertionFromRange(
+               EndLoc, CharSourceRange(BracketRange, true))
+        << FixItHint::CreateRemoval(BracketRange);
+  }
 }
 
 /// [GNU]   typeof-specifier:

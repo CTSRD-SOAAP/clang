@@ -611,8 +611,9 @@ static bool SuggestInitializationFixit(Sema &S, const VarDecl *VD) {
   QualType VariableTy = VD->getType().getCanonicalType();
   if (VariableTy->isBlockPointerType() &&
       !VD->hasAttr<BlocksAttr>()) {
-    S.Diag(VD->getLocation(), diag::note_block_var_fixit_add_initialization) << VD->getDeclName()
-    << FixItHint::CreateInsertion(VD->getLocation(), "__block ");
+    S.Diag(VD->getLocation(), diag::note_block_var_fixit_add_initialization)
+        << VD->getDeclName()
+        << FixItHint::CreateInsertion(VD->getLocation(), "__block ");
     return true;
   }
 
@@ -1024,6 +1025,9 @@ namespace {
     // We don't want to traverse local type declarations. We analyze their
     // methods separately.
     bool TraverseDecl(Decl *D) { return true; }
+
+    // We analyze lambda bodies separately. Skip them here.
+    bool TraverseLambdaBody(LambdaExpr *LE) { return true; }
 
   private:
 

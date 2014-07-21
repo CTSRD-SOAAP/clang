@@ -146,13 +146,6 @@ public:
     Fatal = DiagnosticIDs::Fatal
   };
 
-  /// \brief How do we handle otherwise-unmapped extension?
-  ///
-  /// This is controlled by -pedantic and -pedantic-errors.
-  enum ExtensionHandling {
-    Ext_Ignore, Ext_Warn, Ext_Error
-  };
-
   enum ArgumentKind {
     ak_std_string,      ///< std::string
     ak_c_string,        ///< const char *
@@ -190,7 +183,7 @@ private:
                                    // 0 -> no limit.
   unsigned ConstexprBacktraceLimit; // Cap on depth of constexpr evaluation
                                     // backtrace stack, 0 -> no limit.
-  ExtensionHandling ExtBehavior; // Map extensions onto warnings or errors?
+  diag::Severity ExtBehavior;       // Map extensions to warnings or errors?
   IntrusiveRefCntPtr<DiagnosticIDs> Diags;
   IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts;
   DiagnosticConsumer *Client;
@@ -342,13 +335,12 @@ private:
   /// \brief Second string argument for the delayed diagnostic.
   std::string DelayedDiagArg2;
 
-  /// \brief Flag name value.
+  /// \brief Optional flag value.
   ///
-  /// Some flags accept values. For instance, -Wframe-larger-than or -Rpass.
-  /// When reporting a diagnostic with those flags, it is useful to also
-  /// report the value that actually triggered the flag. The content of this
-  /// string is a value to be emitted after the flag name.
-  std::string FlagNameValue;
+  /// Some flags accept values, for instance: -Wframe-larger-than=<value> and
+  /// -Rpass=<value>. The content of this string is emitted after the flag name
+  /// and '='.
+  std::string FlagValue;
 
 public:
   explicit DiagnosticsEngine(
@@ -523,10 +515,8 @@ public:
   /// mapped onto ignore/warning/error. 
   ///
   /// This corresponds to the GCC -pedantic and -pedantic-errors option.
-  void setExtensionHandlingBehavior(ExtensionHandling H) {
-    ExtBehavior = H;
-  }
-  ExtensionHandling getExtensionHandlingBehavior() const { return ExtBehavior; }
+  void setExtensionHandlingBehavior(diag::Severity H) { ExtBehavior = H; }
+  diag::Severity getExtensionHandlingBehavior() const { return ExtBehavior; }
 
   /// \brief Counter bumped when an __extension__  block is/ encountered.
   ///
@@ -712,11 +702,8 @@ public:
   /// \brief Clear out the current diagnostic.
   void Clear() { CurDiagID = ~0U; }
 
-  /// \brief Return the value associated to this diagnostic flag.
-  StringRef getFlagNameValue() const { return StringRef(FlagNameValue); }
-
-  /// \brief Set the value associated to this diagnostic flag.
-  void setFlagNameValue(StringRef V) { FlagNameValue = V; }
+  /// \brief Return the value associated with this diagnostic flag.
+  StringRef getFlagValue() const { return FlagValue; }
 
 private:
   /// \brief Report the delayed diagnostic.
@@ -1006,7 +993,7 @@ public:
     DiagObj->DiagFixItHints.push_back(Hint);
   }
 
-  void addFlagValue(StringRef V) const { DiagObj->setFlagNameValue(V); }
+  void addFlagValue(StringRef V) const { DiagObj->FlagValue = V; }
 };
 
 struct AddFlagValue {
@@ -1117,7 +1104,7 @@ inline DiagnosticBuilder DiagnosticsEngine::Report(SourceLocation Loc,
   assert(CurDiagID == ~0U && "Multiple diagnostics in flight at once!");
   CurDiagLoc = Loc;
   CurDiagID = DiagID;
-  FlagNameValue.clear();
+  FlagValue.clear();
   return DiagnosticBuilder(this);
 }
 

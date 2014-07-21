@@ -43,6 +43,7 @@
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/CrashRecoveryContext.h"
 #include "llvm/Support/Format.h"
+#include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Mutex.h"
 #include "llvm/Support/Program.h"
@@ -51,9 +52,12 @@
 #include "llvm/Support/Threading.h"
 #include "llvm/Support/Timer.h"
 #include "llvm/Support/raw_ostream.h"
-#include <mutex>
 
-#ifdef __APPLE__
+#if LLVM_ENABLE_THREADS != 0 && defined(__APPLE__)
+#define USE_DARWIN_THREADS
+#endif
+
+#ifdef USE_DARWIN_THREADS
 #include <pthread.h>
 #endif
 
@@ -1780,6 +1784,8 @@ public:
       return cast<CXXDependentScopeMemberExpr>(S)->getMemberNameInfo();
     case Stmt::DependentScopeDeclRefExprClass:
       return cast<DependentScopeDeclRefExpr>(S)->getNameInfo();
+    case Stmt::OMPCriticalDirectiveClass:
+      return cast<OMPCriticalDirective>(S)->getDirectiveName();
     }
   }
 };
@@ -1853,6 +1859,18 @@ public:
   void VisitOMPParallelDirective(const OMPParallelDirective *D);
   void VisitOMPSimdDirective(const OMPSimdDirective *D);
   void VisitOMPForDirective(const OMPForDirective *D);
+  void VisitOMPSectionsDirective(const OMPSectionsDirective *D);
+  void VisitOMPSectionDirective(const OMPSectionDirective *D);
+  void VisitOMPSingleDirective(const OMPSingleDirective *D);
+  void VisitOMPMasterDirective(const OMPMasterDirective *D);
+  void VisitOMPCriticalDirective(const OMPCriticalDirective *D);
+  void VisitOMPParallelForDirective(const OMPParallelForDirective *D);
+  void VisitOMPParallelSectionsDirective(const OMPParallelSectionsDirective *D);
+  void VisitOMPTaskDirective(const OMPTaskDirective *D);
+  void VisitOMPTaskyieldDirective(const OMPTaskyieldDirective *D);
+  void VisitOMPBarrierDirective(const OMPBarrierDirective *D);
+  void VisitOMPTaskwaitDirective(const OMPTaskwaitDirective *D);
+  void VisitOMPFlushDirective(const OMPFlushDirective *D);
 
 private:
   void AddDeclarationNameInfo(const Stmt *S);
@@ -1929,6 +1947,10 @@ void OMPClauseEnqueue::VisitOMPIfClause(const OMPIfClause *C) {
   Visitor->AddStmt(C->getCondition());
 }
 
+void OMPClauseEnqueue::VisitOMPFinalClause(const OMPFinalClause *C) {
+  Visitor->AddStmt(C->getCondition());
+}
+
 void OMPClauseEnqueue::VisitOMPNumThreadsClause(const OMPNumThreadsClause *C) {
   Visitor->AddStmt(C->getNumThreads());
 }
@@ -1950,6 +1972,12 @@ void OMPClauseEnqueue::VisitOMPScheduleClause(const OMPScheduleClause *C) {
 }
 
 void OMPClauseEnqueue::VisitOMPOrderedClause(const OMPOrderedClause *) {}
+
+void OMPClauseEnqueue::VisitOMPNowaitClause(const OMPNowaitClause *) {}
+
+void OMPClauseEnqueue::VisitOMPUntiedClause(const OMPUntiedClause *) {}
+
+void OMPClauseEnqueue::VisitOMPMergeableClause(const OMPMergeableClause *) {}
 
 template<typename T>
 void OMPClauseEnqueue::VisitOMPClauseList(T *Node) {
@@ -1983,6 +2011,13 @@ void OMPClauseEnqueue::VisitOMPAlignedClause(const OMPAlignedClause *C) {
   Visitor->AddStmt(C->getAlignment());
 }
 void OMPClauseEnqueue::VisitOMPCopyinClause(const OMPCopyinClause *C) {
+  VisitOMPClauseList(C);
+}
+void
+OMPClauseEnqueue::VisitOMPCopyprivateClause(const OMPCopyprivateClause *C) {
+  VisitOMPClauseList(C);
+}
+void OMPClauseEnqueue::VisitOMPFlushClause(const OMPFlushClause *C) {
   VisitOMPClauseList(C);
 }
 }
@@ -2286,6 +2321,58 @@ void EnqueueVisitor::VisitOMPForDirective(const OMPForDirective *D) {
   VisitOMPExecutableDirective(D);
 }
 
+void EnqueueVisitor::VisitOMPSectionsDirective(const OMPSectionsDirective *D) {
+  VisitOMPExecutableDirective(D);
+}
+
+void EnqueueVisitor::VisitOMPSectionDirective(const OMPSectionDirective *D) {
+  VisitOMPExecutableDirective(D);
+}
+
+void EnqueueVisitor::VisitOMPSingleDirective(const OMPSingleDirective *D) {
+  VisitOMPExecutableDirective(D);
+}
+
+void EnqueueVisitor::VisitOMPMasterDirective(const OMPMasterDirective *D) {
+  VisitOMPExecutableDirective(D);
+}
+
+void EnqueueVisitor::VisitOMPCriticalDirective(const OMPCriticalDirective *D) {
+  VisitOMPExecutableDirective(D);
+  AddDeclarationNameInfo(D);
+}
+
+void
+EnqueueVisitor::VisitOMPParallelForDirective(const OMPParallelForDirective *D) {
+  VisitOMPExecutableDirective(D);
+}
+
+void EnqueueVisitor::VisitOMPParallelSectionsDirective(
+    const OMPParallelSectionsDirective *D) {
+  VisitOMPExecutableDirective(D);
+}
+
+void EnqueueVisitor::VisitOMPTaskDirective(const OMPTaskDirective *D) {
+  VisitOMPExecutableDirective(D);
+}
+
+void
+EnqueueVisitor::VisitOMPTaskyieldDirective(const OMPTaskyieldDirective *D) {
+  VisitOMPExecutableDirective(D);
+}
+
+void EnqueueVisitor::VisitOMPBarrierDirective(const OMPBarrierDirective *D) {
+  VisitOMPExecutableDirective(D);
+}
+
+void EnqueueVisitor::VisitOMPTaskwaitDirective(const OMPTaskwaitDirective *D) {
+  VisitOMPExecutableDirective(D);
+}
+
+void EnqueueVisitor::VisitOMPFlushDirective(const OMPFlushDirective *D) {
+  VisitOMPExecutableDirective(D);
+}
+
 void CursorVisitor::EnqueueWorkList(VisitorWorkList &WL, const Stmt *S) {
   EnqueueVisitor(WL, MakeCXCursor(S, StmtParent, TU,RegionOfInterest)).Visit(S);
 }
@@ -2571,9 +2658,6 @@ buildPieces(unsigned NameFlags, bool IsMemberRefExpr,
 // Misc. API hooks.
 //===----------------------------------------------------------------------===//               
 
-static llvm::sys::Mutex LoggingMutex;
-static std::once_flag LibclangGlobalInitFlag;
-
 static void fatal_error_handler(void *user_data, const std::string& reason,
                                 bool gen_crash_diag) {
   // Write the result out to stderr avoiding errs() because raw_ostreams can
@@ -2582,9 +2666,15 @@ static void fatal_error_handler(void *user_data, const std::string& reason,
   ::abort();
 }
 
-static void initializeLibClang() {
-  llvm::install_fatal_error_handler(fatal_error_handler, nullptr);
+namespace {
+struct RegisterFatalErrorHandler {
+  RegisterFatalErrorHandler() {
+    llvm::install_fatal_error_handler(fatal_error_handler, nullptr);
+  }
+};
 }
+
+static llvm::ManagedStatic<RegisterFatalErrorHandler> RegisterFatalErrorHandlerOnce;
 
 extern "C" {
 CXIndex clang_createIndex(int excludeDeclarationsFromPCH,
@@ -2594,7 +2684,10 @@ CXIndex clang_createIndex(int excludeDeclarationsFromPCH,
   if (!getenv("LIBCLANG_DISABLE_CRASH_RECOVERY"))
     llvm::CrashRecoveryContext::Enable();
 
-  std::call_once(LibclangGlobalInitFlag, initializeLibClang);
+  // Look through the managed static to trigger construction of the managed
+  // static which registers our fatal error handler. This ensures it is only
+  // registered once.
+  (void)*RegisterFatalErrorHandlerOnce;
 
   CIndexer *CIdxr = new CIndexer();
   if (excludeDeclarationsFromPCH)
@@ -2696,32 +2789,27 @@ struct ParseTranslationUnitInfo {
   const char *source_filename;
   const char *const *command_line_args;
   int num_command_line_args;
-  struct CXUnsavedFile *unsaved_files;
-  unsigned num_unsaved_files;
+  ArrayRef<CXUnsavedFile> unsaved_files;
   unsigned options;
   CXTranslationUnit *out_TU;
-  CXErrorCode result;
+  CXErrorCode &result;
 };
 static void clang_parseTranslationUnit_Impl(void *UserData) {
-  ParseTranslationUnitInfo *PTUI =
-    static_cast<ParseTranslationUnitInfo*>(UserData);
+  const ParseTranslationUnitInfo *PTUI =
+      static_cast<ParseTranslationUnitInfo *>(UserData);
   CXIndex CIdx = PTUI->CIdx;
   const char *source_filename = PTUI->source_filename;
   const char * const *command_line_args = PTUI->command_line_args;
   int num_command_line_args = PTUI->num_command_line_args;
-  struct CXUnsavedFile *unsaved_files = PTUI->unsaved_files;
-  unsigned num_unsaved_files = PTUI->num_unsaved_files;
   unsigned options = PTUI->options;
   CXTranslationUnit *out_TU = PTUI->out_TU;
 
   // Set up the initial return values.
   if (out_TU)
     *out_TU = nullptr;
-  PTUI->result = CXError_Failure;
 
   // Check arguments.
-  if (!CIdx || !out_TU ||
-      (unsaved_files == nullptr && num_unsaved_files != 0)) {
+  if (!CIdx || !out_TU) {
     PTUI->result = CXError_InvalidArguments;
     return;
   }
@@ -2749,7 +2837,7 @@ static void clang_parseTranslationUnit_Impl(void *UserData) {
   // Recover resources if we crash before exiting this function.
   llvm::CrashRecoveryContextCleanupRegistrar<DiagnosticsEngine,
     llvm::CrashRecoveryContextReleaseRefCleanup<DiagnosticsEngine> >
-    DiagCleanup(Diags.getPtr());
+    DiagCleanup(Diags.get());
 
   std::unique_ptr<std::vector<ASTUnit::RemappedFile>> RemappedFiles(
       new std::vector<ASTUnit::RemappedFile>());
@@ -2758,12 +2846,10 @@ static void clang_parseTranslationUnit_Impl(void *UserData) {
   llvm::CrashRecoveryContextCleanupRegistrar<
     std::vector<ASTUnit::RemappedFile> > RemappedCleanup(RemappedFiles.get());
 
-  for (unsigned I = 0; I != num_unsaved_files; ++I) {
-    StringRef Data(unsaved_files[I].Contents, unsaved_files[I].Length);
-    const llvm::MemoryBuffer *Buffer
-      = llvm::MemoryBuffer::getMemBufferCopy(Data, unsaved_files[I].Filename);
-    RemappedFiles->push_back(std::make_pair(unsaved_files[I].Filename,
-                                            Buffer));
+  for (auto &UF : PTUI->unsaved_files) {
+    llvm::MemoryBuffer *MB =
+        llvm::MemoryBuffer::getMemBufferCopy(getContents(UF), UF.Filename);
+    RemappedFiles->push_back(std::make_pair(UF.Filename, MB));
   }
 
   std::unique_ptr<std::vector<const char *>> Args(
@@ -2864,10 +2950,19 @@ enum CXErrorCode clang_parseTranslationUnit2(
       *Log << command_line_args[i] << " ";
   }
 
-  ParseTranslationUnitInfo PTUI = { CIdx, source_filename, command_line_args,
-                                    num_command_line_args, unsaved_files,
-                                    num_unsaved_files, options, out_TU,
-                                    CXError_Failure };
+  if (num_unsaved_files && !unsaved_files)
+    return CXError_InvalidArguments;
+
+  CXErrorCode result = CXError_Failure;
+  ParseTranslationUnitInfo PTUI = {
+      CIdx,
+      source_filename,
+      command_line_args,
+      num_command_line_args,
+      llvm::makeArrayRef(unsaved_files, num_unsaved_files),
+      options,
+      out_TU,
+      result};
   llvm::CrashRecoveryContext CRC;
 
   if (!RunSafely(CRC, clang_parseTranslationUnit_Impl, &PTUI)) {
@@ -2896,8 +2991,8 @@ enum CXErrorCode clang_parseTranslationUnit2(
     if (CXTranslationUnit *TU = PTUI.out_TU)
       PrintLibclangResourceUsage(*TU);
   }
-  
-  return PTUI.result;
+
+  return result;
 }
 
 unsigned clang_defaultSaveOptions(CXTranslationUnit TU) {
@@ -2998,30 +3093,21 @@ unsigned clang_defaultReparseOptions(CXTranslationUnit TU) {
 
 struct ReparseTranslationUnitInfo {
   CXTranslationUnit TU;
-  unsigned num_unsaved_files;
-  struct CXUnsavedFile *unsaved_files;
+  ArrayRef<CXUnsavedFile> unsaved_files;
   unsigned options;
-  int result;
+  CXErrorCode &result;
 };
 
 static void clang_reparseTranslationUnit_Impl(void *UserData) {
-  ReparseTranslationUnitInfo *RTUI =
-    static_cast<ReparseTranslationUnitInfo*>(UserData);
-  RTUI->result = CXError_Failure;
-
+  const ReparseTranslationUnitInfo *RTUI =
+      static_cast<ReparseTranslationUnitInfo *>(UserData);
   CXTranslationUnit TU = RTUI->TU;
-  unsigned num_unsaved_files = RTUI->num_unsaved_files;
-  struct CXUnsavedFile *unsaved_files = RTUI->unsaved_files;
   unsigned options = RTUI->options;
   (void) options;
 
   // Check arguments.
   if (isNotUsableTU(TU)) {
     LOG_BAD_TU(TU);
-    RTUI->result = CXError_InvalidArguments;
-    return;
-  }
-  if (unsaved_files == nullptr && num_unsaved_files != 0) {
     RTUI->result = CXError_InvalidArguments;
     return;
   }
@@ -3043,13 +3129,11 @@ static void clang_reparseTranslationUnit_Impl(void *UserData) {
   // Recover resources if we crash before exiting this function.
   llvm::CrashRecoveryContextCleanupRegistrar<
     std::vector<ASTUnit::RemappedFile> > RemappedCleanup(RemappedFiles.get());
-  
-  for (unsigned I = 0; I != num_unsaved_files; ++I) {
-    StringRef Data(unsaved_files[I].Contents, unsaved_files[I].Length);
-    const llvm::MemoryBuffer *Buffer
-      = llvm::MemoryBuffer::getMemBufferCopy(Data, unsaved_files[I].Filename);
-    RemappedFiles->push_back(std::make_pair(unsaved_files[I].Filename,
-                                            Buffer));
+
+  for (auto &UF : RTUI->unsaved_files) {
+    llvm::MemoryBuffer *MB =
+        llvm::MemoryBuffer::getMemBufferCopy(getContents(UF), UF.Filename);
+    RemappedFiles->push_back(std::make_pair(UF.Filename, MB));
   }
 
   if (!CXXUnit->Reparse(*RemappedFiles.get()))
@@ -3066,12 +3150,17 @@ int clang_reparseTranslationUnit(CXTranslationUnit TU,
     *Log << TU;
   }
 
-  ReparseTranslationUnitInfo RTUI = { TU, num_unsaved_files, unsaved_files,
-                                      options, CXError_Failure };
+  if (num_unsaved_files && !unsaved_files)
+    return CXError_InvalidArguments;
+
+  CXErrorCode result = CXError_Failure;
+  ReparseTranslationUnitInfo RTUI = {
+      TU, llvm::makeArrayRef(unsaved_files, num_unsaved_files), options,
+      result};
 
   if (getenv("LIBCLANG_NOTHREADS")) {
     clang_reparseTranslationUnit_Impl(&RTUI);
-    return RTUI.result;
+    return result;
   }
 
   llvm::CrashRecoveryContext CRC;
@@ -3083,7 +3172,7 @@ int clang_reparseTranslationUnit(CXTranslationUnit TU,
   } else if (getenv("LIBCLANG_RESOURCE_USAGE"))
     PrintLibclangResourceUsage(TU);
 
-  return RTUI.result;
+  return result;
 }
 
 
@@ -3862,6 +3951,8 @@ CXString clang_getCursorKindSpelling(enum CXCursorKind Kind) {
       return cxstring::createRef("SEHExceptStmt");
   case CXCursor_SEHFinallyStmt:
       return cxstring::createRef("SEHFinallyStmt");
+  case CXCursor_SEHLeaveStmt:
+      return cxstring::createRef("SEHLeaveStmt");
   case CXCursor_NullStmt:
       return cxstring::createRef("NullStmt");
   case CXCursor_InvalidFile:
@@ -3960,6 +4051,30 @@ CXString clang_getCursorKindSpelling(enum CXCursorKind Kind) {
     return cxstring::createRef("OMPSimdDirective");
   case CXCursor_OMPForDirective:
     return cxstring::createRef("OMPForDirective");
+  case CXCursor_OMPSectionsDirective:
+    return cxstring::createRef("OMPSectionsDirective");
+  case CXCursor_OMPSectionDirective:
+    return cxstring::createRef("OMPSectionDirective");
+  case CXCursor_OMPSingleDirective:
+    return cxstring::createRef("OMPSingleDirective");
+  case CXCursor_OMPMasterDirective:
+    return cxstring::createRef("OMPMasterDirective");
+  case CXCursor_OMPCriticalDirective:
+    return cxstring::createRef("OMPCriticalDirective");
+  case CXCursor_OMPParallelForDirective:
+    return cxstring::createRef("OMPParallelForDirective");
+  case CXCursor_OMPParallelSectionsDirective:
+    return cxstring::createRef("OMPParallelSectionsDirective");
+  case CXCursor_OMPTaskDirective:
+    return cxstring::createRef("OMPTaskDirective");
+  case CXCursor_OMPTaskyieldDirective:
+    return cxstring::createRef("OMPTaskyieldDirective");
+  case CXCursor_OMPBarrierDirective:
+    return cxstring::createRef("OMPBarrierDirective");
+  case CXCursor_OMPTaskwaitDirective:
+    return cxstring::createRef("OMPTaskwaitDirective");
+  case CXCursor_OMPFlushDirective:
+    return cxstring::createRef("OMPFlushDirective");
   }
 
   llvm_unreachable("Unhandled CXCursorKind");
@@ -6607,7 +6722,7 @@ CXTUResourceUsage clang_getCXTUResourceUsage(CXTranslationUnit TU) {
   // How much memory is used for caching global code completion results?
   unsigned long completionBytes = 0;
   if (GlobalCodeCompletionAllocator *completionAllocator =
-      astUnit->getCachedCompletionAllocator().getPtr()) {
+      astUnit->getCachedCompletionAllocator().get()) {
     completionBytes = completionAllocator->getTotalMemory();
   }
   createCXTUResourceUsageEntry(*entries,
@@ -6766,8 +6881,7 @@ void clang::setThreadBackgroundPriority() {
   if (getenv("LIBCLANG_BGPRIO_DISABLE"))
     return;
 
-  // FIXME: Move to llvm/Support and make it cross-platform.
-#ifdef __APPLE__
+#ifdef USE_DARWIN_THREADS
   setpriority(PRIO_DARWIN_THREAD, 0, PRIO_DARWIN_BG);
 #endif
 }
@@ -6969,18 +7083,20 @@ Logger &cxindex::Logger::operator<<(const llvm::format_object_base &Fmt) {
   return *this;
 }
 
+static llvm::ManagedStatic<llvm::sys::Mutex> LoggingMutex;
+
 cxindex::Logger::~Logger() {
   LogOS.flush();
 
-  llvm::sys::ScopedLock L(LoggingMutex);
+  llvm::sys::ScopedLock L(*LoggingMutex);
 
   static llvm::TimeRecord sBeginTR = llvm::TimeRecord::getCurrentTime();
 
   raw_ostream &OS = llvm::errs();
   OS << "[libclang:" << Name << ':';
 
-  // FIXME: Portability.
-#ifdef __APPLE__
+#ifdef USE_DARWIN_THREADS
+  // TODO: Portability.
   mach_port_t tid = pthread_mach_thread_np(pthread_self());
   OS << tid << ':';
 #endif

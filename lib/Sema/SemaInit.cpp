@@ -17,6 +17,7 @@
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/ExprObjC.h"
 #include "clang/AST/TypeLoc.h"
+#include "clang/Basic/TargetInfo.h"
 #include "clang/Sema/Designator.h"
 #include "clang/Sema/Lookup.h"
 #include "clang/Sema/SemaInternal.h"
@@ -188,7 +189,7 @@ static void CheckStringInit(Expr *Str, QualType &DeclT, const ArrayType *AT,
     // C99 6.7.8p14.
     if (StrLength-1 > CAT->getSize().getZExtValue())
       S.Diag(Str->getLocStart(),
-             diag::warn_initializer_string_for_char_array_too_long)
+             diag::ext_initializer_string_for_char_array_too_long)
         << Str->getSourceRange();
   }
 
@@ -352,8 +353,9 @@ ExprResult InitListChecker::PerformEmptyInit(Sema &SemaRef,
   //   If there are fewer initializer-clauses in the list than there are
   //   members in the aggregate, then each member not explicitly initialized
   //   ...
-  if (SemaRef.getLangOpts().CPlusPlus11 &&
-      Entity.getType()->getBaseElementTypeUnsafe()->isRecordType()) {
+  bool EmptyInitList = SemaRef.getLangOpts().CPlusPlus11 &&
+      Entity.getType()->getBaseElementTypeUnsafe()->isRecordType();
+  if (EmptyInitList) {
     // C++1y / DR1070:
     //   shall be initialized [...] from an empty initializer list.
     //
@@ -375,6 +377,55 @@ ExprResult InitListChecker::PerformEmptyInit(Sema &SemaRef,
   }
 
   InitializationSequence InitSeq(SemaRef, Entity, Kind, SubInit);
+  // libstdc++4.6 marks the vector default constructor as explicit in
+  // _GLIBCXX_DEBUG mode, so recover using the C++03 logic in that case.
+  // stlport does so too. Look for std::__debug for libstdc++, and for
+  // std:: for stlport.  This is effectively a compiler-side implementation of
+  // LWG2193.
+  if (!InitSeq && EmptyInitList && InitSeq.getFailureKind() ==
+          InitializationSequence::FK_ExplicitConstructor) {
+    OverloadCandidateSet::iterator Best;
+    OverloadingResult O =
+        InitSeq.getFailedCandidateSet()
+            .BestViableFunction(SemaRef, Kind.getLocation(), Best);
+    (void)O;
+    assert(O == OR_Success && "Inconsistent overload resolution");
+    CXXConstructorDecl *CtorDecl = cast<CXXConstructorDecl>(Best->Function);
+    CXXRecordDecl *R = CtorDecl->getParent();
+
+    if (CtorDecl->getMinRequiredArguments() == 0 &&
+        CtorDecl->isExplicit() && R->getDeclName() &&
+        SemaRef.SourceMgr.isInSystemHeader(CtorDecl->getLocation())) {
+
+
+      bool IsInStd = false;
+      for (NamespaceDecl *ND = dyn_cast<NamespaceDecl>(R->getDeclContext());
+           ND && !IsInStd; ND = dyn_cast<NamespaceDecl>(ND->getParent())) {
+        if (SemaRef.getStdNamespace()->InEnclosingNamespaceSetOf(ND))
+          IsInStd = true;
+      }
+
+      if (IsInStd && llvm::StringSwitch<bool>(R->getName()) 
+              .Cases("basic_string", "deque", "forward_list", true)
+              .Cases("list", "map", "multimap", "multiset", true)
+              .Cases("priority_queue", "queue", "set", "stack", true)
+              .Cases("unordered_map", "unordered_set", "vector", true)
+              .Default(false)) {
+        InitSeq.InitializeFrom(
+            SemaRef, Entity,
+            InitializationKind::CreateValue(Loc, Loc, Loc, true),
+            MultiExprArg(), /*TopLevelOfInitList=*/false);
+        // Emit a warning for this.  System header warnings aren't shown
+        // by default, but people working on system headers should see it.
+        if (!VerifyOnly) {
+          SemaRef.Diag(CtorDecl->getLocation(),
+                       diag::warn_invalid_initializer_from_system_header);
+          SemaRef.Diag(Entity.getDecl()->getLocation(),
+                       diag::note_used_in_initialization_here);
+        }
+      }
+    }
+  }
   if (!InitSeq) {
     if (!VerifyOnly) {
       InitSeq.Diagnose(SemaRef, Entity, Kind, SubInit);
@@ -737,7 +788,7 @@ void InitListChecker::CheckExplicitInitList(const InitializedEntity &Entity,
     if (StructuredIndex == 1 &&
         IsStringInit(StructuredList->getInit(0), T, SemaRef.Context) ==
             SIF_None) {
-      unsigned DK = diag::warn_excess_initializers_in_char_array_initializer;
+      unsigned DK = diag::ext_excess_initializers_in_char_array_initializer;
       if (SemaRef.getLangOpts().CPlusPlus) {
         DK = diag::err_excess_initializers_in_char_array_initializer;
         hadError = true;
@@ -756,7 +807,7 @@ void InitListChecker::CheckExplicitInitList(const InitializedEntity &Entity,
         CurrentObjectType->isUnionType()? 3 :
         4;
 
-      unsigned DK = diag::warn_excess_initializers;
+      unsigned DK = diag::ext_excess_initializers;
       if (SemaRef.getLangOpts().CPlusPlus) {
         DK = diag::err_excess_initializers;
         hadError = true;
@@ -863,6 +914,15 @@ void InitListChecker::CheckSubElementType(const InitializedEntity &Entity,
     assert(SemaRef.getLangOpts().CPlusPlus &&
            "non-aggregate records are only possible in C++");
     // C++ initialization is handled later.
+  } else if (isa<ImplicitValueInitExpr>(expr)) {
+    // This happens during template instantiation when we see an InitListExpr
+    // that we've already checked once.
+    assert(SemaRef.Context.hasSameType(expr->getType(), ElemType) &&
+           "found implicit initialization for the wrong type");
+    if (!VerifyOnly)
+      UpdateStructuredListElement(StructuredList, StructuredIndex, expr);
+    ++Index;
+    return;
   }
 
   // FIXME: Need to handle atomic aggregate types with implicit init lists.
@@ -1204,6 +1264,46 @@ void InitListChecker::CheckVectorType(const InitializedEntity &Entity,
       CheckSubElementType(ElementEntity, IList, elementType, Index,
                           StructuredList, StructuredIndex);
     }
+
+    if (VerifyOnly)
+      return;
+
+    bool isBigEndian = SemaRef.Context.getTargetInfo().isBigEndian();
+    const VectorType *T = Entity.getType()->getAs<VectorType>();
+    if (isBigEndian && (T->getVectorKind() == VectorType::NeonVector ||
+                        T->getVectorKind() == VectorType::NeonPolyVector)) {
+      // The ability to use vector initializer lists is a GNU vector extension
+      // and is unrelated to the NEON intrinsics in arm_neon.h. On little
+      // endian machines it works fine, however on big endian machines it 
+      // exhibits surprising behaviour:
+      //
+      //   uint32x2_t x = {42, 64};
+      //   return vget_lane_u32(x, 0); // Will return 64.
+      //
+      // Because of this, explicitly call out that it is non-portable.
+      //
+      SemaRef.Diag(IList->getLocStart(),
+                   diag::warn_neon_vector_initializer_non_portable);
+
+      const char *typeCode;
+      unsigned typeSize = SemaRef.Context.getTypeSize(elementType);
+
+      if (elementType->isFloatingType())
+        typeCode = "f";
+      else if (elementType->isSignedIntegerType())
+        typeCode = "s";
+      else if (elementType->isUnsignedIntegerType())
+        typeCode = "u";
+      else
+        llvm_unreachable("Invalid element type!");
+
+      SemaRef.Diag(IList->getLocStart(),
+                   SemaRef.Context.getTypeSize(VT) > 64 ?
+                   diag::note_neon_vector_initializer_non_portable_q :
+                   diag::note_neon_vector_initializer_non_portable)
+        << typeCode << typeSize;
+    }
+
     return;
   }
 
@@ -2669,10 +2769,10 @@ void InitializationSequence::Step::Destroy() {
   case SK_QualificationConversionLValue:
   case SK_LValueToRValue:
   case SK_ListInitialization:
-  case SK_ListConstructorCall:
   case SK_UnwrapInitList:
   case SK_RewrapInitList:
   case SK_ConstructorInitialization:
+  case SK_ConstructorInitializationFromList:
   case SK_ZeroInitialization:
   case SK_CAssignment:
   case SK_StringInit:
@@ -2683,6 +2783,7 @@ void InitializationSequence::Step::Destroy() {
   case SK_PassByIndirectRestore:
   case SK_ProduceObjCObject:
   case SK_StdInitializerList:
+  case SK_StdInitializerListConstructorCall:
   case SK_OCLSamplerInit:
   case SK_OCLZeroEvent:
     break;
@@ -2853,8 +2954,9 @@ InitializationSequence
                                    bool HadMultipleCandidates,
                                    bool FromInitList, bool AsInitList) {
   Step S;
-  S.Kind = FromInitList && !AsInitList ? SK_ListConstructorCall
-                                       : SK_ConstructorInitialization;
+  S.Kind = FromInitList ? AsInitList ? SK_StdInitializerListConstructorCall
+                                     : SK_ConstructorInitializationFromList
+                        : SK_ConstructorInitialization;
   S.Type = T;
   S.Function.HadMultipleCandidates = HadMultipleCandidates;
   S.Function.Function = Constructor;
@@ -5055,6 +5157,7 @@ static ExprResult CopyObject(Sema &S,
                                     ConstructorArgs,
                                     HadMultipleCandidates,
                                     /*ListInit*/ false,
+                                    /*StdInitListInit*/ false,
                                     /*ZeroInit*/ false,
                                     CXXConstructExpr::CK_Complete,
                                     SourceRange());
@@ -5176,6 +5279,7 @@ PerformConstructorInitialization(Sema &S,
                                  const InitializationSequence::Step& Step,
                                  bool &ConstructorInitRequiresZeroInit,
                                  bool IsListInitialization,
+                                 bool IsStdInitListInitialization,
                                  SourceLocation LBraceLoc,
                                  SourceLocation RBraceLoc) {
   unsigned NumArgs = Args.size();
@@ -5237,7 +5341,7 @@ PerformConstructorInitialization(Sema &S,
     CurInit = new (S.Context) CXXTemporaryObjectExpr(
         S.Context, Constructor, TSInfo, ConstructorArgs, ParenOrBraceRange,
         HadMultipleCandidates, IsListInitialization,
-        ConstructorInitRequiresZeroInit);
+        IsStdInitListInitialization, ConstructorInitRequiresZeroInit);
   } else {
     CXXConstructExpr::ConstructionKind ConstructKind =
       CXXConstructExpr::CK_Complete;
@@ -5266,6 +5370,7 @@ PerformConstructorInitialization(Sema &S,
                                         ConstructorArgs,
                                         HadMultipleCandidates,
                                         IsListInitialization,
+                                        IsStdInitListInitialization,
                                         ConstructorInitRequiresZeroInit,
                                         ConstructKind,
                                         ParenOrBraceRange);
@@ -5275,6 +5380,7 @@ PerformConstructorInitialization(Sema &S,
                                         ConstructorArgs,
                                         HadMultipleCandidates,
                                         IsListInitialization,
+                                        IsStdInitListInitialization,
                                         ConstructorInitRequiresZeroInit,
                                         ConstructKind,
                                         ParenOrBraceRange);
@@ -5690,7 +5796,8 @@ InitializationSequence::Perform(Sema &S,
   }
 
   case SK_ConstructorInitialization:
-  case SK_ListConstructorCall:
+  case SK_ConstructorInitializationFromList:
+  case SK_StdInitializerListConstructorCall:
   case SK_ZeroInitialization:
     break;
   }
@@ -5865,6 +5972,7 @@ InitializationSequence::Perform(Sema &S,
                                           ConstructorArgs,
                                           HadMultipleCandidates,
                                           /*ListInit*/ false,
+                                          /*StdInitListInit*/ false,
                                           /*ZeroInit*/ false,
                                           CXXConstructExpr::CK_Complete,
                                           SourceRange());
@@ -6018,7 +6126,7 @@ InitializationSequence::Perform(Sema &S,
       break;
     }
 
-    case SK_ListConstructorCall: {
+    case SK_ConstructorInitializationFromList: {
       // When an initializer list is passed for a parameter of type "reference
       // to object", we don't get an EK_Temporary entity, but instead an
       // EK_Parameter entity with reference type.
@@ -6037,7 +6145,8 @@ InitializationSequence::Perform(Sema &S,
                                                                    Entity,
                                                  Kind, Arg, *Step,
                                                ConstructorInitRequiresZeroInit,
-                                               /*IsListInitialization*/ true,
+                                               /*IsListInitialization*/true,
+                                               /*IsStdInitListInit*/false,
                                                InitList->getLBraceLoc(),
                                                InitList->getRBraceLoc());
       break;
@@ -6059,7 +6168,8 @@ InitializationSequence::Perform(Sema &S,
       break;
     }
 
-    case SK_ConstructorInitialization: {
+    case SK_ConstructorInitialization:
+    case SK_StdInitializerListConstructorCall: {
       // When an initializer list is passed for a parameter of type "reference
       // to object", we don't get an EK_Temporary entity, but instead an
       // EK_Parameter entity with reference type.
@@ -6069,13 +6179,15 @@ InitializationSequence::Perform(Sema &S,
       InitializedEntity TempEntity = InitializedEntity::InitializeTemporary(
                                         Entity.getType().getNonReferenceType());
       bool UseTemporary = Entity.getType()->isReferenceType();
-      CurInit = PerformConstructorInitialization(S, UseTemporary ? TempEntity
-                                                                 : Entity,
-                                                 Kind, Args, *Step,
-                                               ConstructorInitRequiresZeroInit,
-                                               /*IsListInitialization*/ false,
-                                               /*LBraceLoc*/ SourceLocation(),
-                                               /*RBraceLoc*/ SourceLocation());
+      bool IsStdInitListInit =
+          Step->Kind == SK_StdInitializerListConstructorCall;
+      CurInit = PerformConstructorInitialization(
+          S, UseTemporary ? TempEntity : Entity, Kind, Args, *Step,
+          ConstructorInitRequiresZeroInit,
+          /*IsListInitialization*/IsStdInitListInit,
+          /*IsStdInitListInitialization*/IsStdInitListInit,
+          /*LBraceLoc*/SourceLocation(),
+          /*RBraceLoc*/SourceLocation());
       break;
     }
 
@@ -6084,7 +6196,7 @@ InitializationSequence::Perform(Sema &S,
       ++NextStep;
       if (NextStep != StepEnd &&
           (NextStep->Kind == SK_ConstructorInitialization ||
-           NextStep->Kind == SK_ListConstructorCall)) {
+           NextStep->Kind == SK_ConstructorInitializationFromList)) {
         // The need for zero-initialization is recorded directly into
         // the call to the object's constructor within the next step.
         ConstructorInitRequiresZeroInit = true;
@@ -6561,7 +6673,8 @@ bool InitializationSequence::Diagnose(Sema &S,
                               Args.back()->getLocEnd());
 
     if (Failure == FK_ListConstructorOverloadFailed) {
-      assert(Args.size() == 1 && "List construction from other than 1 argument.");
+      assert(Args.size() == 1 &&
+             "List construction from other than 1 argument.");
       InitListExpr *InitList = cast<InitListExpr>(Args[0]);
       Args = MultiExprArg(InitList->getInits(), InitList->getNumInits());
     }
@@ -6919,10 +7032,6 @@ void InitializationSequence::dump(raw_ostream &OS) const {
       OS << "list aggregate initialization";
       break;
 
-    case SK_ListConstructorCall:
-      OS << "list initialization via constructor";
-      break;
-
     case SK_UnwrapInitList:
       OS << "unwrap reference initializer list";
       break;
@@ -6933,6 +7042,10 @@ void InitializationSequence::dump(raw_ostream &OS) const {
 
     case SK_ConstructorInitialization:
       OS << "constructor initialization";
+      break;
+
+    case SK_ConstructorInitializationFromList:
+      OS << "list initialization via constructor";
       break;
 
     case SK_ZeroInitialization:
@@ -6973,6 +7086,10 @@ void InitializationSequence::dump(raw_ostream &OS) const {
 
     case SK_StdInitializerList:
       OS << "std::initializer_list from initializer list";
+      break;
+
+    case SK_StdInitializerListConstructorCall:
+      OS << "list initialization from std::initializer_list";
       break;
 
     case SK_OCLSamplerInit:

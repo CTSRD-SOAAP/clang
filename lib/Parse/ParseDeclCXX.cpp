@@ -689,22 +689,32 @@ Decl *Parser::ParseStaticAssertDeclaration(SourceLocation &DeclEnd){
     return nullptr;
   }
 
-  if (ExpectAndConsume(tok::comma)) {
-    SkipUntil(tok::semi);
-    return nullptr;
-  }
+  ExprResult AssertMessage;
+  if (Tok.is(tok::r_paren)) {
+    Diag(Tok, getLangOpts().CPlusPlus1z
+                  ? diag::warn_cxx1y_compat_static_assert_no_message
+                  : diag::ext_static_assert_no_message)
+      << (getLangOpts().CPlusPlus1z
+              ? FixItHint()
+              : FixItHint::CreateInsertion(Tok.getLocation(), ", \"\""));
+  } else {
+    if (ExpectAndConsume(tok::comma)) {
+      SkipUntil(tok::semi);
+      return nullptr;
+    }
 
-  if (!isTokenStringLiteral()) {
-    Diag(Tok, diag::err_expected_string_literal)
-      << /*Source='static_assert'*/1;
-    SkipMalformedDecl();
-    return nullptr;
-  }
+    if (!isTokenStringLiteral()) {
+      Diag(Tok, diag::err_expected_string_literal)
+        << /*Source='static_assert'*/1;
+      SkipMalformedDecl();
+      return nullptr;
+    }
 
-  ExprResult AssertMessage(ParseStringLiteralExpression());
-  if (AssertMessage.isInvalid()) {
-    SkipMalformedDecl();
-    return nullptr;
+    AssertMessage = ParseStringLiteralExpression();
+    if (AssertMessage.isInvalid()) {
+      SkipMalformedDecl();
+      return nullptr;
+    }
   }
 
   T.consumeClose();
@@ -1229,7 +1239,8 @@ void Parser::ParseClassSpecifier(tok::TokenKind TagTokKind,
   // Parse the (optional) nested-name-specifier.
   CXXScopeSpec &SS = DS.getTypeSpecScope();
   if (getLangOpts().CPlusPlus) {
-    // "FOO : BAR" is not a potential typo for "FOO::BAR".
+    // "FOO : BAR" is not a potential typo for "FOO::BAR".  In this context it
+    // is a base-specifier-list.
     ColonProtectionRAIIObject X(*this);
 
     if (ParseOptionalCXXScopeSpecifier(SS, ParsedType(), EnteringContext))
@@ -1916,14 +1927,8 @@ void Parser::ParseCXXMemberDeclaratorBeforeInitializer(
   //   declarator pure-specifier[opt]
   //   declarator brace-or-equal-initializer[opt]
   //   identifier[opt] ':' constant-expression
-  if (Tok.isNot(tok::colon)) {
-    // Don't parse FOO:BAR as if it were a typo for FOO::BAR, in this context it
-    // is a bitfield.
-    // FIXME: This should only apply when parsing the id-expression (see
-    // PR18587).
-    ColonProtectionRAIIObject X(*this);
+  if (Tok.isNot(tok::colon))
     ParseDeclarator(DeclaratorInfo);
-  }
 
   if (!DeclaratorInfo.isFunctionDeclarator() && TryConsumeToken(tok::colon)) {
     BitfieldSize = ParseConstantExpression();
@@ -2004,6 +2009,14 @@ void Parser::ParseCXXClassMemberDeclaration(AccessSpecifier AS,
     SkipUntil(tok::r_brace, StopAtSemi);
     return;
   }
+
+  // Turn on colon protection early, while parsing declspec, although there is
+  // nothing to protect there. It prevents from false errors if error recovery
+  // incorrectly determines where the declspec ends, as in the example:
+  //   struct A { enum class B { C }; };
+  //   const int C = 4;
+  //   struct D { A::B : C; };
+  ColonProtectionRAIIObject X(*this);
 
   // Access declarations.
   bool MalformedTypeSpec = false;
@@ -2118,13 +2131,11 @@ void Parser::ParseCXXClassMemberDeclaration(AccessSpecifier AS,
   if (MalformedTypeSpec)
     DS.SetTypeSpecError();
 
-  {
-    // Don't parse FOO:BAR as if it were a typo for FOO::BAR, in this context it
-    // is a bitfield.
-    ColonProtectionRAIIObject X(*this);
-    ParseDeclarationSpecifiers(DS, TemplateInfo, AS, DSC_class,
-                               &CommonLateParsedAttrs);
-  }
+  ParseDeclarationSpecifiers(DS, TemplateInfo, AS, DSC_class,
+                             &CommonLateParsedAttrs);
+
+  // Turn off colon protection that was set for declspec.
+  X.restore();
 
   // If we had a free-standing type definition with a missing semicolon, we
   // may get this far before the problem becomes obvious.

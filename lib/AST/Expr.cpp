@@ -998,7 +998,7 @@ getLocationOfByte(unsigned ByteNo, const SourceManager &SM,
     TheLexer.LexFromRawLexer(TheTok);
     
     // Use the StringLiteralParser to compute the length of the string in bytes.
-    StringLiteralParser SLP(&TheTok, 1, SM, Features, Target);
+    StringLiteralParser SLP(TheTok, SM, Features, Target);
     unsigned TokNumBytes = SLP.GetStringLength();
     
     // If the byte is in this token, return the location of the byte.
@@ -2161,12 +2161,15 @@ bool Expr::isUnusedResultAWarning(const Expr *&WarnE, SourceLocation &Loc,
       return true;
     }
 
-    const ObjCMethodDecl *MD = ME->getMethodDecl();
-    if (MD && MD->hasAttr<WarnUnusedResultAttr>()) {
-      WarnE = this;
-      Loc = getExprLoc();
-      return true;
-    }
+    if (const ObjCMethodDecl *MD = ME->getMethodDecl())
+      if (MD->hasAttr<WarnUnusedResultAttr>() ||
+          (MD->isPropertyAccessor() && !MD->getReturnType()->isVoidType() &&
+           !ME->getReceiverType()->isObjCIdType())) {
+        WarnE = this;
+        Loc = getExprLoc();
+        return true;
+      }
+
     return false;
   }
 

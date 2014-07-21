@@ -2154,6 +2154,8 @@ static std::string CalculateDiagnostic(const Record &S) {
                                            "ExpectedVariableOrFunction)";
 
     case ObjCMethod | ObjCProp: return "ExpectedMethodOrProperty";
+    case ObjCProtocol | ObjCInterface:
+      return "ExpectedObjectiveCInterfaceOrProtocol";
     case Field | Var: return "ExpectedFieldOrGlobalVar";
   }
 
@@ -2766,7 +2768,7 @@ static void WriteDocumentation(const DocumentationData &Doc,
   if (SupportedSpellings & Declspec) OS << "X";
   OS << "\",\"";
   if (SupportedSpellings & Keyword) OS << "X";
-  OS << "\"\n\n";
+  OS << "\", \"";
   if (SupportedSpellings & Pragma) OS << "X";
   OS << "\"\n\n";
 

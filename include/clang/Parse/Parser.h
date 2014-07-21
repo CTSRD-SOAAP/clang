@@ -264,7 +264,7 @@ public:
   typedef clang::TypeResult        TypeResult;
 
   typedef Expr *ExprArg;
-  typedef llvm::MutableArrayRef<Stmt*> MultiStmtArg;
+  typedef MutableArrayRef<Stmt*> MultiStmtArg;
   typedef Sema::FullExprArg FullExprArg;
 
   ExprResult ExprError() { return ExprResult(true); }
@@ -486,12 +486,12 @@ private:
   void HandlePragmaMSVtorDisp();
 
   void HandlePragmaMSPragma();
-  unsigned HandlePragmaMSSection(llvm::StringRef PragmaName,
-                                 SourceLocation PragmaLocation);
-  unsigned HandlePragmaMSSegment(llvm::StringRef PragmaName,
-                                 SourceLocation PragmaLocation);
-  unsigned HandlePragmaMSInitSeg(llvm::StringRef PragmaName,
-                                 SourceLocation PragmaLocation);
+  bool HandlePragmaMSSection(StringRef PragmaName,
+                             SourceLocation PragmaLocation);
+  bool HandlePragmaMSSegment(StringRef PragmaName,
+                             SourceLocation PragmaLocation);
+  bool HandlePragmaMSInitSeg(StringRef PragmaName,
+                             SourceLocation PragmaLocation);
 
   /// \brief Handle the annotation token produced for
   /// #pragma align...
@@ -1668,6 +1668,7 @@ private:
   StmtResult ParseSEHTryBlockCommon(SourceLocation Loc);
   StmtResult ParseSEHExceptBlock(SourceLocation Loc);
   StmtResult ParseSEHFinallyBlock(SourceLocation Loc);
+  StmtResult ParseSEHLeaveStatement();
 
   //===--------------------------------------------------------------------===//
   // Objective-C Statements
@@ -2115,22 +2116,34 @@ private:
   void ParseAvailabilityAttribute(IdentifierInfo &Availability,
                                   SourceLocation AvailabilityLoc,
                                   ParsedAttributes &attrs,
-                                  SourceLocation *endLoc);
-  
+                                  SourceLocation *endLoc,
+                                  IdentifierInfo *ScopeName,
+                                  SourceLocation ScopeLoc,
+                                  AttributeList::Syntax Syntax);
+
   void ParseObjCBridgeRelatedAttribute(IdentifierInfo &ObjCBridgeRelated,
                                        SourceLocation ObjCBridgeRelatedLoc,
                                        ParsedAttributes &attrs,
-                                       SourceLocation *endLoc);
+                                       SourceLocation *endLoc,
+                                       IdentifierInfo *ScopeName,
+                                       SourceLocation ScopeLoc,
+                                       AttributeList::Syntax Syntax);
 
   void ParseTypeTagForDatatypeAttribute(IdentifierInfo &AttrName,
                                         SourceLocation AttrNameLoc,
                                         ParsedAttributes &Attrs,
-                                        SourceLocation *EndLoc);
+                                        SourceLocation *EndLoc,
+                                        IdentifierInfo *ScopeName,
+                                        SourceLocation ScopeLoc,
+                                        AttributeList::Syntax Syntax);
 
   void ParseAttributeWithTypeArg(IdentifierInfo &AttrName,
                                  SourceLocation AttrNameLoc,
                                  ParsedAttributes &Attrs,
-                                 SourceLocation *EndLoc);
+                                 SourceLocation *EndLoc,
+                                 IdentifierInfo *ScopeName,
+                                 SourceLocation ScopeLoc,
+                                 AttributeList::Syntax Syntax);
 
   void ParseTypeofSpecifier(DeclSpec &DS);
   SourceLocation ParseDecltypeSpecifier(DeclSpec &DS);
@@ -2214,6 +2227,7 @@ private:
          SmallVectorImpl<DeclaratorChunk::ParamInfo> &ParamInfo,
          SourceLocation &EllipsisLoc);
   void ParseBracketDeclarator(Declarator &D);
+  void ParseMisplacedBracketDeclarator(Declarator &D);
 
   //===--------------------------------------------------------------------===//
   // C++ 7: Declarations [dcl.dcl]
@@ -2325,7 +2339,12 @@ private:
                                 SmallVectorImpl<Expr *> &VarList,
                                 bool AllowScopeSpecifier);
   /// \brief Parses declarative or executable directive.
-  StmtResult ParseOpenMPDeclarativeOrExecutableDirective();
+  ///
+  /// \param StandAloneAllowed true if allowed stand-alone directives,
+  /// false - otherwise
+  ///
+  StmtResult
+  ParseOpenMPDeclarativeOrExecutableDirective(bool StandAloneAllowed);
   /// \brief Parses clause of kind \a CKind for directive of a kind \a Kind.
   ///
   /// \param DKind Kind of current directive.

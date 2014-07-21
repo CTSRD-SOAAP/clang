@@ -1477,6 +1477,8 @@ public:
 
   typedef ExprIterator inputs_iterator;
   typedef ConstExprIterator const_inputs_iterator;
+  typedef llvm::iterator_range<inputs_iterator> inputs_range;
+  typedef llvm::iterator_range<const_inputs_iterator> inputs_const_range;
 
   inputs_iterator begin_inputs() {
     return &Exprs[0] + NumOutputs;
@@ -1486,6 +1488,8 @@ public:
     return &Exprs[0] + NumOutputs + NumInputs;
   }
 
+  inputs_range inputs() { return inputs_range(begin_inputs(), end_inputs()); }
+
   const_inputs_iterator begin_inputs() const {
     return &Exprs[0] + NumOutputs;
   }
@@ -1494,10 +1498,16 @@ public:
     return &Exprs[0] + NumOutputs + NumInputs;
   }
 
+  inputs_const_range inputs() const {
+    return inputs_const_range(begin_inputs(), end_inputs());
+  }
+
   // Output expr iterators.
 
   typedef ExprIterator outputs_iterator;
   typedef ConstExprIterator const_outputs_iterator;
+  typedef llvm::iterator_range<outputs_iterator> outputs_range;
+  typedef llvm::iterator_range<const_outputs_iterator> outputs_const_range;
 
   outputs_iterator begin_outputs() {
     return &Exprs[0];
@@ -1505,12 +1515,18 @@ public:
   outputs_iterator end_outputs() {
     return &Exprs[0] + NumOutputs;
   }
+  outputs_range outputs() {
+    return outputs_range(begin_outputs(), end_outputs());
+  }
 
   const_outputs_iterator begin_outputs() const {
     return &Exprs[0];
   }
   const_outputs_iterator end_outputs() const {
     return &Exprs[0] + NumOutputs;
+  }
+  outputs_const_range outputs() const {
+    return outputs_const_range(begin_outputs(), end_outputs());
   }
 
   child_range children() {
@@ -1876,22 +1892,24 @@ class SEHTryStmt : public Stmt {
   bool            IsCXXTry;
   SourceLocation  TryLoc;
   Stmt           *Children[2];
+  int             HandlerIndex;
+  int             HandlerParentIndex;
 
   enum { TRY = 0, HANDLER = 1 };
 
   SEHTryStmt(bool isCXXTry, // true if 'try' otherwise '__try'
-             SourceLocation TryLoc,
-             Stmt *TryBlock,
-             Stmt *Handler);
+             SourceLocation TryLoc, Stmt *TryBlock, Stmt *Handler,
+             int HandlerIndex, int HandlerParentIndex);
 
   friend class ASTReader;
   friend class ASTStmtReader;
   explicit SEHTryStmt(EmptyShell E) : Stmt(SEHTryStmtClass, E) { }
 
 public:
-  static SEHTryStmt* Create(const ASTContext &C, bool isCXXTry,
+  static SEHTryStmt *Create(const ASTContext &C, bool isCXXTry,
                             SourceLocation TryLoc, Stmt *TryBlock,
-                            Stmt *Handler);
+                            Stmt *Handler, int HandlerIndex,
+                            int HandlerParentIndex);
 
   SourceLocation getLocStart() const LLVM_READONLY { return getTryLoc(); }
   SourceLocation getLocEnd() const LLVM_READONLY { return getEndLoc(); }
@@ -1918,6 +1936,34 @@ public:
   static bool classof(const Stmt *T) {
     return T->getStmtClass() == SEHTryStmtClass;
   }
+
+  int getHandlerIndex() const { return HandlerIndex; }
+  int getHandlerParentIndex() const { return HandlerParentIndex; }
+};
+
+/// Represents a __leave statement.
+///
+class SEHLeaveStmt : public Stmt {
+  SourceLocation LeaveLoc;
+public:
+  explicit SEHLeaveStmt(SourceLocation LL)
+      : Stmt(SEHLeaveStmtClass), LeaveLoc(LL) {}
+
+  /// \brief Build an empty __leave statement.
+  explicit SEHLeaveStmt(EmptyShell Empty) : Stmt(SEHLeaveStmtClass, Empty) { }
+
+  SourceLocation getLeaveLoc() const { return LeaveLoc; }
+  void setLeaveLoc(SourceLocation L) { LeaveLoc = L; }
+
+  SourceLocation getLocStart() const LLVM_READONLY { return LeaveLoc; }
+  SourceLocation getLocEnd() const LLVM_READONLY { return LeaveLoc; }
+
+  static bool classof(const Stmt *T) {
+    return T->getStmtClass() == SEHLeaveStmtClass;
+  }
+
+  // Iterators
+  child_range children() { return child_range(); }
 };
 
 /// \brief This captures a statement into a function. For example, the following

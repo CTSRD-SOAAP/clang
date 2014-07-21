@@ -32,8 +32,7 @@ void CodeGenFunction::EmitOMPParallelDirective(const OMPParallelDirective &S) {
     CodeGenFunction CGF(CGM, true);
     CGCapturedStmtInfo CGInfo(*CS, CS->getCapturedRegionKind());
     CGF.CapturedStmtInfo = &CGInfo;
-    OutlinedFn = CGF.GenerateCapturedStmtFunction(
-        CS->getCapturedDecl(), CS->getCapturedRecordDecl(), CS->getLocStart());
+    OutlinedFn = CGF.GenerateCapturedStmtFunction(*CS);
   }
 
   // Build call __kmpc_fork_call(loc, 1, microtask, captured_struct/*context*/)
@@ -76,5 +75,56 @@ void CodeGenFunction::EmitOMPSimdDirective(const OMPSimdDirective &S) {
 }
 
 void CodeGenFunction::EmitOMPForDirective(const OMPForDirective &) {
-  llvm_unreachable("Not supported yet.");
+  llvm_unreachable("CodeGen for 'omp for' is not supported yet.");
 }
+
+void CodeGenFunction::EmitOMPSectionsDirective(const OMPSectionsDirective &) {
+  llvm_unreachable("CodeGen for 'omp sections' is not supported yet.");
+}
+
+void CodeGenFunction::EmitOMPSectionDirective(const OMPSectionDirective &) {
+  llvm_unreachable("CodeGen for 'omp section' is not supported yet.");
+}
+
+void CodeGenFunction::EmitOMPSingleDirective(const OMPSingleDirective &) {
+  llvm_unreachable("CodeGen for 'omp single' is not supported yet.");
+}
+
+void CodeGenFunction::EmitOMPMasterDirective(const OMPMasterDirective &) {
+  llvm_unreachable("CodeGen for 'omp master' is not supported yet.");
+}
+
+void CodeGenFunction::EmitOMPCriticalDirective(const OMPCriticalDirective &) {
+  llvm_unreachable("CodeGen for 'omp critical' is not supported yet.");
+}
+
+void
+CodeGenFunction::EmitOMPParallelForDirective(const OMPParallelForDirective &) {
+  llvm_unreachable("CodeGen for 'omp parallel for' is not supported yet.");
+}
+
+void CodeGenFunction::EmitOMPParallelSectionsDirective(
+    const OMPParallelSectionsDirective &) {
+  llvm_unreachable("CodeGen for 'omp parallel sections' is not supported yet.");
+}
+
+void CodeGenFunction::EmitOMPTaskDirective(const OMPTaskDirective &) {
+  llvm_unreachable("CodeGen for 'omp task' is not supported yet.");
+}
+
+void CodeGenFunction::EmitOMPTaskyieldDirective(const OMPTaskyieldDirective &) {
+  llvm_unreachable("CodeGen for 'omp taskyield' is not supported yet.");
+}
+
+void CodeGenFunction::EmitOMPBarrierDirective(const OMPBarrierDirective &) {
+  llvm_unreachable("CodeGen for 'omp barrier' is not supported yet.");
+}
+
+void CodeGenFunction::EmitOMPTaskwaitDirective(const OMPTaskwaitDirective &) {
+  llvm_unreachable("CodeGen for 'omp taskwait' is not supported yet.");
+}
+
+void CodeGenFunction::EmitOMPFlushDirective(const OMPFlushDirective &) {
+  llvm_unreachable("CodeGen for 'omp flush' is not supported yet.");
+}
+
