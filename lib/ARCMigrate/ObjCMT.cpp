@@ -185,23 +185,17 @@ ObjCMigrateAction::ObjCMigrateAction(FrontendAction *WrappedAction,
     MigrateDir = "."; // user current directory if none is given.
 }
 
-ASTConsumer *ObjCMigrateAction::CreateASTConsumer(CompilerInstance &CI,
-                                                  StringRef InFile) {
+std::unique_ptr<ASTConsumer>
+ObjCMigrateAction::CreateASTConsumer(CompilerInstance &CI, StringRef InFile) {
   PPConditionalDirectiveRecord *
     PPRec = new PPConditionalDirectiveRecord(CompInst->getSourceManager());
   CompInst->getPreprocessor().addPPCallbacks(PPRec);
-  ASTConsumer *
-    WrappedConsumer = WrapperFrontendAction::CreateASTConsumer(CI, InFile);
-  ASTConsumer *MTConsumer = new ObjCMigrateASTConsumer(MigrateDir,
-                                                       ObjCMigAction,
-                                                       Remapper,
-                                                    CompInst->getFileManager(),
-                                                       PPRec,
-                                                       CompInst->getPreprocessor(),
-                                                       false,
-                                                       ArrayRef<std::string>());
-  ASTConsumer *Consumers[] = { MTConsumer, WrappedConsumer };
-  return new MultiplexConsumer(Consumers);
+  std::vector<std::unique_ptr<ASTConsumer>> Consumers;
+  Consumers.push_back(WrapperFrontendAction::CreateASTConsumer(CI, InFile));
+  Consumers.push_back(llvm::make_unique<ObjCMigrateASTConsumer>(
+      MigrateDir, ObjCMigAction, Remapper, CompInst->getFileManager(), PPRec,
+      CompInst->getPreprocessor(), false, ArrayRef<std::string>()));
+  return llvm::make_unique<MultiplexConsumer>(std::move(Consumers));
 }
 
 bool ObjCMigrateAction::BeginInvocation(CompilerInstance &CI) {
@@ -1827,11 +1821,12 @@ void ObjCMigrateASTConsumer::HandleTranslationUnit(ASTContext &Ctx) {
     llvm::raw_svector_ostream vecOS(newText);
     buf.write(vecOS);
     vecOS.flush();
-    llvm::MemoryBuffer *memBuf = llvm::MemoryBuffer::getMemBufferCopy(
-                   StringRef(newText.data(), newText.size()), file->getName());
+    std::unique_ptr<llvm::MemoryBuffer> memBuf(
+        llvm::MemoryBuffer::getMemBufferCopy(
+            StringRef(newText.data(), newText.size()), file->getName()));
     SmallString<64> filePath(file->getName());
     FileMgr.FixupRelativePath(filePath);
-    Remapper.remap(filePath.str(), memBuf);
+    Remapper.remap(filePath.str(), std::move(memBuf));
   }
 
   if (IsOutputFile) {
@@ -1865,8 +1860,8 @@ static std::vector<std::string> getWhiteListFilenames(StringRef DirPath) {
   return Filenames;
 }
 
-ASTConsumer *MigrateSourceAction::CreateASTConsumer(CompilerInstance &CI,
-                                                  StringRef InFile) {
+std::unique_ptr<ASTConsumer>
+MigrateSourceAction::CreateASTConsumer(CompilerInstance &CI, StringRef InFile) {
   PPConditionalDirectiveRecord *
     PPRec = new PPConditionalDirectiveRecord(CI.getSourceManager());
   unsigned ObjCMTAction = CI.getFrontendOpts().ObjCMTAction;
@@ -1883,14 +1878,10 @@ ASTConsumer *MigrateSourceAction::CreateASTConsumer(CompilerInstance &CI,
   CI.getPreprocessor().addPPCallbacks(PPRec);
   std::vector<std::string> WhiteList =
     getWhiteListFilenames(CI.getFrontendOpts().ObjCMTWhiteListPath);
-  return new ObjCMigrateASTConsumer(CI.getFrontendOpts().OutputFile,
-                                    ObjCMTAction,
-                                    Remapper,
-                                    CI.getFileManager(),
-                                    PPRec,
-                                    CI.getPreprocessor(),
-                                    /*isOutputFile=*/true,
-                                    WhiteList);
+  return llvm::make_unique<ObjCMigrateASTConsumer>(
+      CI.getFrontendOpts().OutputFile, ObjCMTAction, Remapper,
+      CI.getFileManager(), PPRec, CI.getPreprocessor(),
+      /*isOutputFile=*/true, WhiteList);
 }
 
 namespace {
@@ -1949,7 +1940,7 @@ public:
       return true;
 
     llvm::SourceMgr SM;
-    Stream YAMLStream(FileBufOrErr.get().release(), SM);
+    Stream YAMLStream(std::move(*FileBufOrErr), SM);
     document_iterator I = YAMLStream.begin();
     if (I == YAMLStream.end())
       return true;

@@ -548,6 +548,8 @@ void Driver::generateCompilationDiagnostics(Compilation &C,
         StringRef NewFilename = llvm::sys::path::filename(*it);
         I = StringRef(Cmd).rfind(OldFilename);
         E = I + OldFilename.size();
+        if (E + 1 < Cmd.size() && Cmd[E] == '"')
+          ++E;  // Replace a trailing quote if present.
         I = Cmd.rfind(" ", I) + 1;
         Cmd.replace(I, E - I, NewFilename.data(), NewFilename.size());
         if (!VFS.empty()) {
@@ -1893,8 +1895,6 @@ static llvm::Triple computeTargetTriple(StringRef DefaultTargetTriple,
         Target.setArch(llvm::Triple::mips64el);
       else if (Target.getArch() == llvm::Triple::aarch64_be)
         Target.setArch(llvm::Triple::aarch64);
-      else if (Target.getArch() == llvm::Triple::arm64_be)
-        Target.setArch(llvm::Triple::arm64);
     } else {
       if (Target.getArch() == llvm::Triple::mipsel)
         Target.setArch(llvm::Triple::mips);
@@ -1902,15 +1902,11 @@ static llvm::Triple computeTargetTriple(StringRef DefaultTargetTriple,
         Target.setArch(llvm::Triple::mips64);
       else if (Target.getArch() == llvm::Triple::aarch64)
         Target.setArch(llvm::Triple::aarch64_be);
-      else if (Target.getArch() == llvm::Triple::arm64)
-        Target.setArch(llvm::Triple::arm64_be);
     }
   }
 
   // Skip further flag support on OSes which don't support '-m32' or '-m64'.
-  if (Target.getArchName() == "tce" ||
-      Target.getOS() == llvm::Triple::AuroraUX ||
-      Target.getOS() == llvm::Triple::Minix)
+  if (Target.getArchName() == "tce" || Target.getOS() == llvm::Triple::Minix)
     return Target;
 
   // Handle pseudo-target flags '-m64', '-mx32', '-m32' and '-m16'.
@@ -1947,9 +1943,6 @@ const ToolChain &Driver::getToolChain(const ArgList &Args,
   ToolChain *&TC = ToolChains[Target.str()];
   if (!TC) {
     switch (Target.getOS()) {
-    case llvm::Triple::AuroraUX:
-      TC = new toolchains::AuroraUX(*this, Target, Args);
-      break;
     case llvm::Triple::Darwin:
     case llvm::Triple::MacOSX:
     case llvm::Triple::IOS:

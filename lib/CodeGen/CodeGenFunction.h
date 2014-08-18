@@ -11,8 +11,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef CLANG_CODEGEN_CODEGENFUNCTION_H
-#define CLANG_CODEGEN_CODEGENFUNCTION_H
+#ifndef LLVM_CLANG_LIB_CODEGEN_CODEGENFUNCTION_H
+#define LLVM_CLANG_LIB_CODEGEN_CODEGENFUNCTION_H
 
 #include "CGBuilder.h"
 #include "CGDebugInfo.h"
@@ -257,6 +257,10 @@ public:
     SanitizerScope(CodeGenFunction *CGF);
     ~SanitizerScope();
   };
+
+  /// In C++, whether we are code generating a thunk.  This controls whether we
+  /// should emit cleanups.
+  bool CurFuncIsThunk;
 
   /// In ARC, whether we should autorelease the return value.
   bool AutoreleaseResult;
@@ -1204,8 +1208,11 @@ public:
 
   void StartThunk(llvm::Function *Fn, GlobalDecl GD, const CGFunctionInfo &FnInfo);
 
-  void EmitCallAndReturnForThunk(GlobalDecl GD, llvm::Value *Callee,
-                                 const ThunkInfo *Thunk);
+  void EmitCallAndReturnForThunk(llvm::Value *Callee, const ThunkInfo *Thunk);
+
+  /// Emit a musttail call for a thunk with a potentially adjusted this pointer.
+  void EmitMustTailThunk(const CXXMethodDecl *MD, llvm::Value *AdjustedThisPtr,
+                         llvm::Value *Callee);
 
   /// GenerateThunk - Generate a thunk for the given method.
   void GenerateThunk(llvm::Function *Fn, const CGFunctionInfo &FnInfo,
@@ -1392,8 +1399,13 @@ public:
 
   LValue MakeNaturalAlignAddrLValue(llvm::Value *V, QualType T) {
     CharUnits Alignment;
-    if (!T->isIncompleteType())
+    if (!T->isIncompleteType()) {
       Alignment = getContext().getTypeAlignInChars(T);
+      unsigned MaxAlign = getContext().getLangOpts().MaxTypeAlign;
+      if (MaxAlign && Alignment.getQuantity() > MaxAlign &&
+          !getContext().isAlignmentRequired(T))
+        Alignment = CharUnits::fromQuantity(MaxAlign);
+    }
     return LValue::MakeAddr(V, T, Alignment, getContext(),
                             CGM.getTBAAInfo(T));
   }
@@ -1936,6 +1948,8 @@ public:
   void EmitOMPBarrierDirective(const OMPBarrierDirective &S);
   void EmitOMPTaskwaitDirective(const OMPTaskwaitDirective &S);
   void EmitOMPFlushDirective(const OMPFlushDirective &S);
+  void EmitOMPOrderedDirective(const OMPOrderedDirective &S);
+  void EmitOMPAtomicDirective(const OMPAtomicDirective &S);
 
   //===--------------------------------------------------------------------===//
   //                         LValue Expression Emission
@@ -2290,7 +2304,8 @@ public:
   llvm::Value *EmitObjCArrayLiteral(const ObjCArrayLiteral *E);
   llvm::Value *EmitObjCDictionaryLiteral(const ObjCDictionaryLiteral *E);
   llvm::Value *EmitObjCCollectionLiteral(const Expr *E,
-                                const ObjCMethodDecl *MethodWithObjects);
+                                const ObjCMethodDecl *MethodWithObjects,
+                                const ObjCMethodDecl *AllocMethod);
   llvm::Value *EmitObjCSelectorExpr(const ObjCSelectorExpr *E);
   RValue EmitObjCMessageExpr(const ObjCMessageExpr *E,
                              ReturnValueSlot Return = ReturnValueSlot());
@@ -2416,7 +2431,6 @@ public:
   /// CreateStaticVarDecl - Create a zero-initialized LLVM global for
   /// a static local variable.
   llvm::Constant *CreateStaticVarDecl(const VarDecl &D,
-                                      const char *Separator,
                                       llvm::GlobalValue::LinkageTypes Linkage);
 
   /// AddInitializerToStaticVarDecl - Add the initializer for 'D' to the

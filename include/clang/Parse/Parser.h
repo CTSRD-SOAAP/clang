@@ -163,6 +163,8 @@ class Parser : public CodeCompletionHandler {
   std::unique_ptr<PragmaHandler> MSSection;
   std::unique_ptr<PragmaHandler> OptimizeHandler;
   std::unique_ptr<PragmaHandler> LoopHintHandler;
+  std::unique_ptr<PragmaHandler> UnrollHintHandler;
+  std::unique_ptr<PragmaHandler> NoUnrollHintHandler;
 
   std::unique_ptr<CommentHandler> CommentSemaHandler;
 
@@ -522,8 +524,8 @@ private:
   StmtResult HandlePragmaCaptured();
 
   /// \brief Handle the annotation token produced for
-  /// #pragma vectorize...
-  LoopHint HandlePragmaLoopHint();
+  /// #pragma clang loop and #pragma unroll.
+  bool HandlePragmaLoopHint(LoopHint &Hint);
 
   /// GetLookAheadToken - This peeks ahead N tokens and returns that token
   /// without consuming any tokens.  LookAhead(0) returns 'Tok', LookAhead(1)
@@ -724,7 +726,7 @@ private:
   /// returned.
   bool ExpectAndConsume(tok::TokenKind ExpectedTok,
                         unsigned Diag = diag::err_expected,
-                        const char *DiagMsg = "");
+                        StringRef DiagMsg = "");
 
   /// \brief The parser expects a semicolon and, if present, will consume it.
   ///
@@ -2162,7 +2164,8 @@ private:
   VirtSpecifiers::Specifier isCXX11VirtSpecifier() const {
     return isCXX11VirtSpecifier(Tok);
   }
-  void ParseOptionalCXX11VirtSpecifierSeq(VirtSpecifiers &VS, bool IsInterface);
+  void ParseOptionalCXX11VirtSpecifierSeq(VirtSpecifiers &VS, bool IsInterface,
+                                          SourceLocation FriendLoc);
 
   bool isCXX11FinalKeyword() const;
 
@@ -2206,8 +2209,21 @@ private:
   void ParseDeclaratorInternal(Declarator &D,
                                DirectDeclParseFunction DirectDeclParser);
 
-  void ParseTypeQualifierListOpt(DeclSpec &DS, bool GNUAttributesAllowed = true,
-                                 bool CXX11AttributesAllowed = true,
+  enum AttrRequirements {
+    AR_NoAttributesParsed = 0, ///< No attributes are diagnosed.
+    AR_GNUAttributesParsedAndRejected = 1 << 0, ///< Diagnose GNU attributes.
+    AR_GNUAttributesParsed = 1 << 1,
+    AR_CXX11AttributesParsed = 1 << 2,
+    AR_DeclspecAttributesParsed = 1 << 3,
+    AR_AllAttributesParsed = AR_GNUAttributesParsed |
+                             AR_CXX11AttributesParsed |
+                             AR_DeclspecAttributesParsed,
+    AR_VendorAttributesParsed = AR_GNUAttributesParsed |
+                                AR_DeclspecAttributesParsed
+  };
+
+  void ParseTypeQualifierListOpt(DeclSpec &DS,
+                                 unsigned AttrReqs = AR_AllAttributesParsed,
                                  bool AtomicAllowed = true,
                                  bool IdentifierRequired = false);
   void ParseDirectDeclarator(Declarator &D);

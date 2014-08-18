@@ -195,12 +195,12 @@ SourceLocation Expr::getExprLoc() const {
   case Stmt::NoStmtClass: llvm_unreachable("statement without class");
 #define ABSTRACT_STMT(type)
 #define STMT(type, base) \
-  case Stmt::type##Class: llvm_unreachable(#type " is not an Expr"); break;
+  case Stmt::type##Class: break;
 #define EXPR(type, base) \
   case Stmt::type##Class: return getExprLocImpl<type>(this, &type::getExprLoc);
 #include "clang/AST/StmtNodes.inc"
   }
-  llvm_unreachable("unknown statement kind");
+  llvm_unreachable("unknown expression kind");
 }
 
 //===----------------------------------------------------------------------===//
@@ -1252,7 +1252,7 @@ SourceLocation CallExpr::getLocStart() const {
     return cast<CXXOperatorCallExpr>(this)->getLocStart();
 
   SourceLocation begin = getCallee()->getLocStart();
-  if (begin.isInvalid() && getNumArgs() > 0)
+  if (begin.isInvalid() && getNumArgs() > 0 && getArg(0))
     begin = getArg(0)->getLocStart();
   return begin;
 }
@@ -1261,7 +1261,7 @@ SourceLocation CallExpr::getLocEnd() const {
     return cast<CXXOperatorCallExpr>(this)->getLocEnd();
 
   SourceLocation end = getRParenLoc();
-  if (end.isInvalid() && getNumArgs() > 0)
+  if (end.isInvalid() && getNumArgs() > 0 && getArg(getNumArgs() - 1))
     end = getArg(getNumArgs() - 1)->getLocEnd();
   return end;
 }
@@ -4041,10 +4041,12 @@ Stmt::child_range ObjCMessageExpr::children() {
 
 ObjCArrayLiteral::ObjCArrayLiteral(ArrayRef<Expr *> Elements, 
                                    QualType T, ObjCMethodDecl *Method,
+                                   ObjCMethodDecl *AllocMethod,
                                    SourceRange SR)
   : Expr(ObjCArrayLiteralClass, T, VK_RValue, OK_Ordinary, 
          false, false, false, false), 
-    NumElements(Elements.size()), Range(SR), ArrayWithObjectsMethod(Method)
+    NumElements(Elements.size()), Range(SR), ArrayWithObjectsMethod(Method),
+    ArrayAllocMethod(AllocMethod)
 {
   Expr **SaveElements = getElements();
   for (unsigned I = 0, N = Elements.size(); I != N; ++I) {
@@ -4062,10 +4064,11 @@ ObjCArrayLiteral::ObjCArrayLiteral(ArrayRef<Expr *> Elements,
 ObjCArrayLiteral *ObjCArrayLiteral::Create(const ASTContext &C,
                                            ArrayRef<Expr *> Elements,
                                            QualType T, ObjCMethodDecl * Method,
+                                           ObjCMethodDecl *allocMethod,
                                            SourceRange SR) {
   void *Mem = C.Allocate(sizeof(ObjCArrayLiteral) 
                          + Elements.size() * sizeof(Expr *));
-  return new (Mem) ObjCArrayLiteral(Elements, T, Method, SR);
+  return new (Mem) ObjCArrayLiteral(Elements, T, Method, allocMethod, SR);
 }
 
 ObjCArrayLiteral *ObjCArrayLiteral::CreateEmpty(const ASTContext &C,
@@ -4080,11 +4083,13 @@ ObjCDictionaryLiteral::ObjCDictionaryLiteral(
                                              ArrayRef<ObjCDictionaryElement> VK, 
                                              bool HasPackExpansions,
                                              QualType T, ObjCMethodDecl *method,
+                                             ObjCMethodDecl *allocMethod,
                                              SourceRange SR)
   : Expr(ObjCDictionaryLiteralClass, T, VK_RValue, OK_Ordinary, false, false,
          false, false),
     NumElements(VK.size()), HasPackExpansions(HasPackExpansions), Range(SR), 
-    DictWithObjectsMethod(method)
+    DictWithObjectsMethod(method),
+    DictAllocMethod(allocMethod)
 {
   KeyValuePair *KeyValues = getKeyValues();
   ExpansionData *Expansions = getExpansionData();
@@ -4117,6 +4122,7 @@ ObjCDictionaryLiteral::Create(const ASTContext &C,
                               ArrayRef<ObjCDictionaryElement> VK, 
                               bool HasPackExpansions,
                               QualType T, ObjCMethodDecl *method,
+                              ObjCMethodDecl *allocMethod,
                               SourceRange SR) {
   unsigned ExpansionsSize = 0;
   if (HasPackExpansions)
@@ -4124,7 +4130,8 @@ ObjCDictionaryLiteral::Create(const ASTContext &C,
     
   void *Mem = C.Allocate(sizeof(ObjCDictionaryLiteral) + 
                          sizeof(KeyValuePair) * VK.size() + ExpansionsSize);
-  return new (Mem) ObjCDictionaryLiteral(VK, HasPackExpansions, T, method, SR);
+  return new (Mem) ObjCDictionaryLiteral(VK, HasPackExpansions, T,
+                                         method, allocMethod, SR);
 }
 
 ObjCDictionaryLiteral *

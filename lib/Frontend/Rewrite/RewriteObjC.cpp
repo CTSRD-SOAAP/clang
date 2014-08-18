@@ -413,7 +413,7 @@ namespace {
     void GetBlockDeclRefExprs(Stmt *S);
     void GetInnerBlockDeclRefExprs(Stmt *S,
                 SmallVectorImpl<DeclRefExpr *> &InnerBlockDeclRefs,
-                llvm::SmallPtrSet<const DeclContext *, 8> &InnerContexts);
+                llvm::SmallPtrSetImpl<const DeclContext *> &InnerContexts);
 
     // We avoid calling Type::isBlockPointerType(), since it operates on the
     // canonical type. We only care if the top-level type is a closure pointer.
@@ -600,12 +600,12 @@ RewriteObjC::RewriteObjC(std::string inFile, raw_ostream* OS,
                "for @try/@finally (code may not execute properly)");
 }
 
-ASTConsumer *clang::CreateObjCRewriter(const std::string& InFile,
-                                       raw_ostream* OS,
-                                       DiagnosticsEngine &Diags,
-                                       const LangOptions &LOpts,
-                                       bool SilenceRewriteMacroWarning) {
-  return new RewriteObjCFragileABI(InFile, OS, Diags, LOpts, SilenceRewriteMacroWarning);
+std::unique_ptr<ASTConsumer>
+clang::CreateObjCRewriter(const std::string &InFile, raw_ostream *OS,
+                          DiagnosticsEngine &Diags, const LangOptions &LOpts,
+                          bool SilenceRewriteMacroWarning) {
+  return llvm::make_unique<RewriteObjCFragileABI>(InFile, OS, Diags, LOpts,
+                                                  SilenceRewriteMacroWarning);
 }
 
 void RewriteObjC::InitializeCommon(ASTContext &context) {
@@ -3701,7 +3701,7 @@ void RewriteObjC::GetBlockDeclRefExprs(Stmt *S) {
 
 void RewriteObjC::GetInnerBlockDeclRefExprs(Stmt *S,
                 SmallVectorImpl<DeclRefExpr *> &InnerBlockDeclRefs,
-                llvm::SmallPtrSet<const DeclContext *, 8> &InnerContexts) {
+                llvm::SmallPtrSetImpl<const DeclContext *> &InnerContexts) {
   for (Stmt::child_range CI = S->children(); CI; ++CI)
     if (*CI) {
       if (BlockExpr *CBE = dyn_cast<BlockExpr>(*CI)) {

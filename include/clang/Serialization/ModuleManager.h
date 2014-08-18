@@ -12,8 +12,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_CLANG_SERIALIZATION_MODULE_MANAGER_H
-#define LLVM_CLANG_SERIALIZATION_MODULE_MANAGER_H
+#ifndef LLVM_CLANG_SERIALIZATION_MODULEMANAGER_H
+#define LLVM_CLANG_SERIALIZATION_MODULEMANAGER_H
 
 #include "clang/Basic/FileManager.h"
 #include "clang/Serialization/Module.h"
@@ -232,7 +232,7 @@ public:
   /// Any module that is known to both the global module index and the module
   /// manager that is *not* in this set can be skipped.
   void visit(bool (*Visitor)(ModuleFile &M, void *UserData), void *UserData,
-             llvm::SmallPtrSet<ModuleFile *, 4> *ModuleFilesHit = nullptr);
+             llvm::SmallPtrSetImpl<ModuleFile *> *ModuleFilesHit = nullptr);
   
   /// \brief Visit each of the modules with a depth-first traversal.
   ///

@@ -508,7 +508,7 @@ namespace {
     void GetBlockDeclRefExprs(Stmt *S);
     void GetInnerBlockDeclRefExprs(Stmt *S,
                 SmallVectorImpl<DeclRefExpr *> &InnerBlockDeclRefs,
-                llvm::SmallPtrSet<const DeclContext *, 8> &InnerContexts);
+                llvm::SmallPtrSetImpl<const DeclContext *> &InnerContexts);
 
     // We avoid calling Type::isBlockPointerType(), since it operates on the
     // canonical type. We only care if the top-level type is a closure pointer.
@@ -675,14 +675,11 @@ RewriteModernObjC::RewriteModernObjC(std::string inFile, raw_ostream* OS,
                "for @try/@finally (code may not execute properly)");
 }
 
-ASTConsumer *clang::CreateModernObjCRewriter(const std::string& InFile,
-                                       raw_ostream* OS,
-                                       DiagnosticsEngine &Diags,
-                                       const LangOptions &LOpts,
-                                       bool SilenceRewriteMacroWarning,
-                                       bool LineInfo) {
-    return new RewriteModernObjC(InFile, OS, Diags, LOpts,
-                                 SilenceRewriteMacroWarning, LineInfo);
+std::unique_ptr<ASTConsumer> clang::CreateModernObjCRewriter(
+    const std::string &InFile, raw_ostream *OS, DiagnosticsEngine &Diags,
+    const LangOptions &LOpts, bool SilenceRewriteMacroWarning, bool LineInfo) {
+  return llvm::make_unique<RewriteModernObjC>(
+      InFile, OS, Diags, LOpts, SilenceRewriteMacroWarning, LineInfo);
 }
 
 void RewriteModernObjC::InitializeCommon(ASTContext &context) {
@@ -4598,7 +4595,7 @@ void RewriteModernObjC::GetBlockDeclRefExprs(Stmt *S) {
 
 void RewriteModernObjC::GetInnerBlockDeclRefExprs(Stmt *S,
                 SmallVectorImpl<DeclRefExpr *> &InnerBlockDeclRefs,
-                llvm::SmallPtrSet<const DeclContext *, 8> &InnerContexts) {
+                llvm::SmallPtrSetImpl<const DeclContext *> &InnerContexts) {
   for (Stmt::child_range CI = S->children(); CI; ++CI)
     if (*CI) {
       if (BlockExpr *CBE = dyn_cast<BlockExpr>(*CI)) {

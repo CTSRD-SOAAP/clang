@@ -1451,6 +1451,7 @@ static bool IsStandardConversion(Sema &S, Expr* From, QualType ToType,
       // We were able to resolve the address of the overloaded function,
       // so we can convert to the type of that function.
       FromType = Fn->getType();
+      SCS.setFromType(FromType);
 
       // we can sometimes resolve &foo<int> regardless of ToType, so check
       // if the type matches (identity) or we are converting to bool
@@ -5674,6 +5675,83 @@ Sema::AddOverloadCandidate(FunctionDecl *Function,
     Candidate.DeductionFailure.Data = FailedAttr;
     return;
   }
+}
+
+ObjCMethodDecl *Sema::SelectBestMethod(Selector Sel, MultiExprArg Args,
+                                       bool IsInstance) {
+  SmallVector<ObjCMethodDecl*, 4> Methods;
+  if (!CollectMultipleMethodsInGlobalPool(Sel, Methods, IsInstance))
+    return nullptr;
+    
+  for (unsigned b = 0, e = Methods.size(); b < e; b++) {
+    bool Match = true;
+    ObjCMethodDecl *Method = Methods[b];
+    unsigned NumNamedArgs = Sel.getNumArgs();
+    // Method might have more arguments than selector indicates. This is due
+    // to addition of c-style arguments in method.
+    if (Method->param_size() > NumNamedArgs)
+      NumNamedArgs = Method->param_size();
+    if (Args.size() < NumNamedArgs)
+      continue;
+            
+    for (unsigned i = 0; i < NumNamedArgs; i++) {
+      // We can't do any type-checking on a type-dependent argument.
+      if (Args[i]->isTypeDependent()) {
+        Match = false;
+        break;
+      }
+        
+      ParmVarDecl *param = Method->parameters()[i];
+      Expr *argExpr = Args[i];
+      assert(argExpr && "SelectBestMethod(): missing expression");
+                
+      // Strip the unbridged-cast placeholder expression off unless it's
+      // a consumed argument.
+      if (argExpr->hasPlaceholderType(BuiltinType::ARCUnbridgedCast) &&
+          !param->hasAttr<CFConsumedAttr>())
+        argExpr = stripARCUnbridgedCast(argExpr);
+                
+      // If the parameter is __unknown_anytype, move on to the next method.
+      if (param->getType() == Context.UnknownAnyTy) {
+        Match = false;
+        break;
+      }
+                
+      ImplicitConversionSequence ConversionState
+        = TryCopyInitialization(*this, argExpr, param->getType(),
+                                /*SuppressUserConversions*/false,
+                                /*InOverloadResolution=*/true,
+                                /*AllowObjCWritebackConversion=*/
+                                getLangOpts().ObjCAutoRefCount,
+                                /*AllowExplicit*/false);
+        if (ConversionState.isBad()) {
+          Match = false;
+          break;
+        }
+    }
+    // Promote additional arguments to variadic methods.
+    if (Match && Method->isVariadic()) {
+      for (unsigned i = NumNamedArgs, e = Args.size(); i < e; ++i) {
+        if (Args[i]->isTypeDependent()) {
+          Match = false;
+          break;
+        }
+        ExprResult Arg = DefaultVariadicArgumentPromotion(Args[i], VariadicMethod,
+                                                          nullptr);
+        if (Arg.isInvalid()) {
+          Match = false;
+          break;
+        }
+      }
+    } else
+      // Check for extra arguments to non-variadic methods.
+      if (Args.size() != NumNamedArgs)
+        Match = false;
+
+    if (Match)
+      return Method;
+  }
+  return nullptr;
 }
 
 static bool IsNotEnableIfAttr(Attr *A) { return !isa<EnableIfAttr>(A); }
@@ -11351,6 +11429,10 @@ Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
         << qualsString
         << (qualsString.find(' ') == std::string::npos ? 1 : 2);
     }
+
+    if (resultType->isMemberPointerType())
+      if (Context.getTargetInfo().getCXXABI().isMicrosoft())
+        RequireCompleteType(LParenLoc, resultType, 0);
 
     CXXMemberCallExpr *call
       = new (Context) CXXMemberCallExpr(Context, MemExprE, Args,

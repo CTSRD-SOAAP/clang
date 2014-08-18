@@ -380,7 +380,6 @@ AddDefaultCPlusPlusIncludePaths(const llvm::Triple &triple, const HeaderSearchOp
       break;
 
     case llvm::Triple::aarch64:
-    case llvm::Triple::arm64:
       AddGnuCPlusPlusIncludePaths("/usr/include/c++/4.2.1",
                                   "arm64-apple-darwin10", "", "", triple);
       break;
@@ -444,11 +443,6 @@ AddDefaultCPlusPlusIncludePaths(const llvm::Triple &triple, const HeaderSearchOp
     break;
   case llvm::Triple::Solaris:
     AddGnuCPlusPlusIncludePaths("/usr/gcc/4.5/include/c++/4.5.2/",
-                                "i386-pc-solaris2.11", "", "", triple);
-    // Solaris - Fall though..
-  case llvm::Triple::AuroraUX:
-    // AuroraUX
-    AddGnuCPlusPlusIncludePaths("/opt/gcc4/include/c++/4.2.4",
                                 "i386-pc-solaris2.11", "", "", triple);
     break;
   default:
