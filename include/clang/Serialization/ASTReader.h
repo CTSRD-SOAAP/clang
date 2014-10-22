@@ -206,6 +206,9 @@ public:
                            std::unique_ptr<ASTReaderListener> Second)
       : First(std::move(First)), Second(std::move(Second)) {}
 
+  std::unique_ptr<ASTReaderListener> takeFirst() { return std::move(First); }
+  std::unique_ptr<ASTReaderListener> takeSecond() { return std::move(Second); }
+
   bool ReadFullVersionInformation(StringRef FullVersion) override;
   void ReadModuleName(StringRef ModuleName) override;
   void ReadModuleMapFile(StringRef ModuleMapPath) override;
@@ -758,6 +761,11 @@ private:
   /// Sema tracks these because it checks for the key functions being defined
   /// at the end of the TU, in which case it directs CodeGen to emit the VTable.
   SmallVector<uint64_t, 16> DynamicClasses;
+
+  /// \brief The IDs of all potentially unused typedef names in the chain.
+  ///
+  /// Sema tracks these to emit warnings.
+  SmallVector<uint64_t, 16> UnusedLocalTypedefNameCandidates;
 
   /// \brief The IDs of the declarations Sema stores directly.
   ///
@@ -1384,12 +1392,17 @@ public:
   void makeNamesVisible(const HiddenNames &Names, Module *Owner,
                         bool FromFinalization);
 
+  /// \brief Take the AST callbacks listener.
+  std::unique_ptr<ASTReaderListener> takeListener() {
+    return std::move(Listener);
+  }
+
   /// \brief Set the AST callbacks listener.
   void setListener(std::unique_ptr<ASTReaderListener> Listener) {
     this->Listener = std::move(Listener);
   }
 
-  /// \brief Add an AST callbak listener.
+  /// \brief Add an AST callback listener.
   ///
   /// Takes ownership of \p L.
   void addListener(std::unique_ptr<ASTReaderListener> L) {
@@ -1398,6 +1411,30 @@ public:
                                                       std::move(Listener));
     Listener = std::move(L);
   }
+
+  /// RAII object to temporarily add an AST callback listener.
+  class ListenerScope {
+    ASTReader &Reader;
+    bool Chained;
+
+  public:
+    ListenerScope(ASTReader &Reader, std::unique_ptr<ASTReaderListener> L)
+        : Reader(Reader), Chained(false) {
+      auto Old = Reader.takeListener();
+      if (Old) {
+        Chained = true;
+        L = llvm::make_unique<ChainedASTReaderListener>(std::move(L),
+                                                        std::move(Old));
+      }
+      Reader.setListener(std::move(L));
+    }
+    ~ListenerScope() {
+      auto New = Reader.takeListener();
+      if (Chained)
+        Reader.setListener(static_cast<ChainedASTReaderListener *>(New.get())
+                               ->takeSecond());
+    }
+  };
 
   /// \brief Set the AST deserialization listener.
   void setDeserializationListener(ASTDeserializationListener *Listener,
@@ -1789,6 +1826,9 @@ public:
 
   void ReadDynamicClasses(SmallVectorImpl<CXXRecordDecl *> &Decls) override;
 
+  void ReadUnusedLocalTypedefNameCandidates(
+      llvm::SmallSetVector<const TypedefNameDecl *, 4> &Decls) override;
+
   void ReadLocallyScopedExternCDecls(
                                   SmallVectorImpl<NamedDecl *> &Decls) override;
 
@@ -2068,9 +2108,9 @@ public:
   /// \brief Retrieve the AST context that this AST reader supplements.
   ASTContext &getContext() { return Context; }
 
-  // \brief Contains declarations that were loaded before we have
+  // \brief Contains the IDs for declarations that were requested before we have
   // access to a Sema object.
-  SmallVector<NamedDecl *, 16> PreloadedDecls;
+  SmallVector<uint64_t, 16> PreloadedDeclIDs;
 
   /// \brief Retrieve the semantic analysis object used to analyze the
   /// translation unit in which the precompiled header is being

@@ -88,7 +88,7 @@ bool Compilation::CleanupFile(const char *File, bool IssueErrors) const {
     // Failure is only failure if the file exists and is "regular". We checked
     // for it being regular before, and llvm::sys::fs::remove ignores ENOENT,
     // so we don't need to check again.
-    
+
     if (IssueErrors)
       getDriver().Diag(clang::diag::err_drv_unable_to_remove_file)
         << EC.message();
@@ -202,9 +202,8 @@ void Compilation::ExecuteJob(const Job &J,
       FailingCommands.push_back(std::make_pair(Res, FailingCommand));
   } else {
     const JobList *Jobs = cast<JobList>(&J);
-    for (JobList::const_iterator it = Jobs->begin(), ie = Jobs->end();
-         it != ie; ++it)
-      ExecuteJob(**it, FailingCommands);
+    for (const auto &Job : *Jobs)
+      ExecuteJob(Job, FailingCommands);
   }
 }
 

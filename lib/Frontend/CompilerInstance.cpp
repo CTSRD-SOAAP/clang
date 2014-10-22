@@ -135,30 +135,33 @@ static void SetUpDiagnosticLog(DiagnosticOptions *DiagOpts,
                                const CodeGenOptions *CodeGenOpts,
                                DiagnosticsEngine &Diags) {
   std::error_code EC;
-  bool OwnsStream = false;
+  std::unique_ptr<raw_ostream> StreamOwner;
   raw_ostream *OS = &llvm::errs();
   if (DiagOpts->DiagnosticLogFile != "-") {
     // Create the output stream.
-    llvm::raw_fd_ostream *FileOS(new llvm::raw_fd_ostream(
+    auto FileOS = llvm::make_unique<llvm::raw_fd_ostream>(
         DiagOpts->DiagnosticLogFile, EC,
-        llvm::sys::fs::F_Append | llvm::sys::fs::F_Text));
+        llvm::sys::fs::F_Append | llvm::sys::fs::F_Text);
     if (EC) {
       Diags.Report(diag::warn_fe_cc_log_diagnostics_failure)
           << DiagOpts->DiagnosticLogFile << EC.message();
     } else {
       FileOS->SetUnbuffered();
       FileOS->SetUseAtomicWrites(true);
-      OS = FileOS;
-      OwnsStream = true;
+      OS = FileOS.get();
+      StreamOwner = std::move(FileOS);
     }
   }
 
   // Chain in the diagnostic client which will log the diagnostics.
-  LogDiagnosticPrinter *Logger = new LogDiagnosticPrinter(*OS, DiagOpts,
-                                                          OwnsStream);
+  auto Logger = llvm::make_unique<LogDiagnosticPrinter>(*OS, DiagOpts,
+                                                        std::move(StreamOwner));
   if (CodeGenOpts)
     Logger->setDwarfDebugFlags(CodeGenOpts->DwarfDebugFlags);
-  Diags.setClient(new ChainedDiagnosticConsumer(Diags.takeClient(), Logger));
+  assert(Diags.ownsClient());
+  Diags.setClient(new ChainedDiagnosticConsumer(
+      std::unique_ptr<DiagnosticConsumer>(Diags.takeClient()),
+      std::move(Logger)));
 }
 
 static void SetupSerializedDiagnostics(DiagnosticOptions *DiagOpts,
@@ -174,11 +177,13 @@ static void SetupSerializedDiagnostics(DiagnosticOptions *DiagOpts,
     return;
   }
 
-  DiagnosticConsumer *SerializedConsumer =
+  auto SerializedConsumer =
       clang::serialized_diags::create(std::move(OS), DiagOpts);
 
-  Diags.setClient(new ChainedDiagnosticConsumer(Diags.takeClient(),
-                                                SerializedConsumer));
+  assert(Diags.ownsClient());
+  Diags.setClient(new ChainedDiagnosticConsumer(
+      std::unique_ptr<DiagnosticConsumer>(Diags.takeClient()),
+      std::move(SerializedConsumer)));
 }
 
 void CompilerInstance::createDiagnostics(DiagnosticConsumer *Client,
@@ -958,13 +963,21 @@ static bool compileModuleImpl(CompilerInstance &ImportingInstance,
   // safe because the FileManager is shared between the compiler instances.
   GenerateModuleAction CreateModuleAction(
       ModMap.getModuleMapFileForUniquing(Module), Module->IsSystem);
-  
+
+  ImportingInstance.getDiagnostics().Report(ImportLoc,
+                                            diag::remark_module_build)
+    << Module->Name << ModuleFileName;
+
   // Execute the action to actually build the module in-place. Use a separate
   // thread so that we get a stack large enough.
   const unsigned ThreadStackSize = 8 << 20;
   llvm::CrashRecoveryContext CRC;
   CRC.RunSafelyOnThread([&]() { Instance.ExecuteAction(CreateModuleAction); },
                         ThreadStackSize);
+
+  ImportingInstance.getDiagnostics().Report(ImportLoc,
+                                            diag::remark_module_build_done)
+    << Module->Name;
 
   // Delete the temporary module map file.
   // FIXME: Even though we're executing under crash protection, it would still
@@ -985,9 +998,10 @@ static bool compileAndLoadModule(CompilerInstance &ImportingInstance,
                                  SourceLocation ImportLoc,
                                  SourceLocation ModuleNameLoc, Module *Module,
                                  StringRef ModuleFileName) {
+  DiagnosticsEngine &Diags = ImportingInstance.getDiagnostics();
+
   auto diagnoseBuildFailure = [&] {
-    ImportingInstance.getDiagnostics().Report(ModuleNameLoc,
-                                              diag::err_module_not_built)
+    Diags.Report(ModuleNameLoc, diag::err_module_not_built)
         << Module->Name << SourceRange(ImportLoc, ModuleNameLoc);
   };
 
@@ -1001,6 +1015,8 @@ static bool compileAndLoadModule(CompilerInstance &ImportingInstance,
     llvm::LockFileManager Locked(ModuleFileName);
     switch (Locked) {
     case llvm::LockFileManager::LFS_Error:
+      Diags.Report(ModuleNameLoc, diag::err_module_lock_failure)
+          << Module->Name;
       return false;
 
     case llvm::LockFileManager::LFS_Owned:
@@ -1024,7 +1040,7 @@ static bool compileAndLoadModule(CompilerInstance &ImportingInstance,
     // Try to read the module file, now that we've compiled it.
     ASTReader::ASTReadResult ReadResult =
         ImportingInstance.getModuleManager()->ReadAST(
-            ModuleFileName, serialization::MK_Module, ImportLoc,
+            ModuleFileName, serialization::MK_ImplicitModule, ImportLoc,
             ModuleLoadCapabilities);
 
     if (ReadResult == ASTReader::OutOfDate &&
@@ -1034,6 +1050,10 @@ static bool compileAndLoadModule(CompilerInstance &ImportingInstance,
       // consistent with this ImportingInstance.  Try again...
       continue;
     } else if (ReadResult == ASTReader::Missing) {
+      diagnoseBuildFailure();
+    } else if (ReadResult != ASTReader::Success &&
+               !Diags.hasErrorOccurred()) {
+      // The ASTReader didn't diagnose the error, so conservatively report it.
       diagnoseBuildFailure();
     }
     return ReadResult == ASTReader::Success;
@@ -1248,6 +1268,53 @@ void CompilerInstance::createModuleManager() {
 }
 
 ModuleLoadResult
+CompilerInstance::loadModuleFile(StringRef FileName, SourceLocation Loc) {
+  if (!ModuleManager)
+    createModuleManager();
+  if (!ModuleManager)
+    return ModuleLoadResult();
+
+  // Load the module if this is the first time we've been told about this file.
+  auto *MF = ModuleManager->getModuleManager().lookup(FileName);
+  if (!MF) {
+    struct ReadModuleNameListener : ASTReaderListener {
+      std::function<void(StringRef)> OnRead;
+      ReadModuleNameListener(std::function<void(StringRef)> F) : OnRead(F) {}
+      void ReadModuleName(StringRef ModuleName) override { OnRead(ModuleName); }
+    };
+
+    // Register listener to track the modules that are loaded by explicitly
+    // loading a module file. We suppress any attempts to implicitly load
+    // module files for any such module.
+    ASTReader::ListenerScope OnReadModuleName(
+        *ModuleManager,
+        llvm::make_unique<ReadModuleNameListener>([&](StringRef ModuleName) {
+      auto &PP = getPreprocessor();
+      auto *NameII = PP.getIdentifierInfo(ModuleName);
+      auto *Module = PP.getHeaderSearchInfo().lookupModule(ModuleName, false);
+      if (!KnownModules.insert(std::make_pair(NameII, Module)).second)
+        getDiagnostics().Report(Loc, diag::err_module_already_loaded)
+            << ModuleName << FileName;
+    }));
+
+    if (ModuleManager->ReadAST(FileName, serialization::MK_ExplicitModule, Loc,
+                               ASTReader::ARR_None) != ASTReader::Success)
+      return ModuleLoadResult();
+
+    MF = ModuleManager->getModuleManager().lookup(FileName);
+    assert(MF && "unexpectedly failed to load module file");
+  }
+
+  if (MF->ModuleName.empty()) {
+    getDiagnostics().Report(Loc, diag::err_module_file_not_module)
+      << FileName;
+    return ModuleLoadResult();
+  }
+  auto *Module = PP->getHeaderSearchInfo().lookupModule(MF->ModuleName, false);
+  return ModuleLoadResult(Module, false);
+}
+
+ModuleLoadResult
 CompilerInstance::loadModule(SourceLocation ImportLoc,
                              ModuleIdPath Path,
                              Module::NameVisibilityKind Visibility,
@@ -1310,8 +1377,9 @@ CompilerInstance::loadModule(SourceLocation ImportLoc,
 
     // Try to load the module file.
     unsigned ARRFlags = ASTReader::ARR_OutOfDate | ASTReader::ARR_Missing;
-    switch (ModuleManager->ReadAST(ModuleFileName, serialization::MK_Module,
-                                   ImportLoc, ARRFlags)) {
+    switch (ModuleManager->ReadAST(ModuleFileName,
+                                   serialization::MK_ImplicitModule, ImportLoc,
+                                   ARRFlags)) {
     case ASTReader::Success:
       break;
 
@@ -1340,9 +1408,6 @@ CompilerInstance::loadModule(SourceLocation ImportLoc,
         return ModuleLoadResult();
       }
 
-      getDiagnostics().Report(ImportLoc, diag::remark_module_build)
-          << ModuleName << ModuleFileName;
-
       // Check whether we have already attempted to build this module (but
       // failed).
       if (getPreprocessorOpts().FailedModules &&
@@ -1357,6 +1422,8 @@ CompilerInstance::loadModule(SourceLocation ImportLoc,
       // Try to compile and then load the module.
       if (!compileAndLoadModule(*this, ImportLoc, ModuleNameLoc, Module,
                                 ModuleFileName)) {
+        assert(getDiagnostics().hasErrorOccurred() &&
+               "undiagnosed error in compileAndLoadModule");
         if (getPreprocessorOpts().FailedModules)
           getPreprocessorOpts().FailedModules->addFailed(ModuleName);
         KnownModules[Path[0].first] = nullptr;

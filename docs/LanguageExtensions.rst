@@ -819,7 +819,16 @@ C11 atomic operations
 Use ``__has_feature(c_atomic)`` or ``__has_extension(c_atomic)`` to determine
 if support for atomic types using ``_Atomic`` is enabled.  Clang also provides
 :ref:`a set of builtins <langext-__c11_atomic>` which can be used to implement
-the ``<stdatomic.h>`` operations on ``_Atomic`` types.
+the ``<stdatomic.h>`` operations on ``_Atomic`` types. Use
+``__has_include(<stdatomic.h>)`` to determine if C11's ``<stdatomic.h>`` header
+is available.
+
+Clang will use the system's ``<stdatomic.h>`` header when one is available, and
+will otherwise use its own. When using its own, implementations of the atomic
+operations are provided as macros. In the cases where C11 also requires a real
+function, this header provides only the declaration of that function (along
+with a shadowing macro implementation), and you must link to a library which
+provides a definition of the function if you use it instead of the macro.
 
 C11 generic selections
 ^^^^^^^^^^^^^^^^^^^^^^
@@ -1228,8 +1237,9 @@ Builtin Functions
 Clang supports a number of builtin library functions with the same syntax as
 GCC, including things like ``__builtin_nan``, ``__builtin_constant_p``,
 ``__builtin_choose_expr``, ``__builtin_types_compatible_p``,
-``__sync_fetch_and_add``, etc.  In addition to the GCC builtins, Clang supports
-a number of builtins that GCC does not, which are listed here.
+``__builtin_assume_aligned``, ``__sync_fetch_and_add``, etc.  In addition to
+the GCC builtins, Clang supports a number of builtins that GCC does not, which
+are listed here.
 
 Please note that Clang does not and will not support all of the GCC builtins
 for vector operations.  Instead of using builtins, you should use the functions
@@ -1238,6 +1248,42 @@ portable wrappers for these.  Many of the Clang versions of these functions are
 implemented directly in terms of :ref:`extended vector support
 <langext-vectors>` instead of builtins, in order to reduce the number of
 builtins that we need to implement.
+
+``__builtin_assume``
+------------------------------
+
+``__builtin_assume`` is used to provide the optimizer with a boolean
+invariant that is defined to be true.
+
+**Syntax**:
+
+.. code-block:: c++
+
+  __builtin_assume(bool)
+
+**Example of Use**:
+
+.. code-block:: c++
+
+  int foo(int x) {
+    __builtin_assume(x != 0);
+
+    // The optimizer may short-circuit this check using the invariant.
+    if (x == 0)
+      return do_something();
+
+    return do_something_else();
+  }
+
+**Description**:
+
+The boolean argument to this function is defined to be true. The optimizer may
+analyze the form of the expression provided as the argument and deduce from
+that information used to optimize the program. If the condition is violated
+during execution, the behavior is undefined. The argument itself is never
+evaluated, so any side effects of the expression will be discarded.
+
+Query for this feature with ``__has_builtin(__builtin_assume)``.
 
 ``__builtin_readcyclecounter``
 ------------------------------
@@ -1560,12 +1606,14 @@ __c11_atomic builtins
 Clang provides a set of builtins which are intended to be used to implement
 C11's ``<stdatomic.h>`` header.  These builtins provide the semantics of the
 ``_explicit`` form of the corresponding C11 operation, and are named with a
-``__c11_`` prefix.  The supported operations are:
+``__c11_`` prefix.  The supported operations, and the differences from
+the corresponding C11 operations, are:
 
 * ``__c11_atomic_init``
 * ``__c11_atomic_thread_fence``
 * ``__c11_atomic_signal_fence``
-* ``__c11_atomic_is_lock_free``
+* ``__c11_atomic_is_lock_free`` (The argument is the size of the
+  ``_Atomic(...)`` object, instead of its address)
 * ``__c11_atomic_store``
 * ``__c11_atomic_load``
 * ``__c11_atomic_exchange``
@@ -1576,6 +1624,11 @@ C11's ``<stdatomic.h>`` header.  These builtins provide the semantics of the
 * ``__c11_atomic_fetch_and``
 * ``__c11_atomic_fetch_or``
 * ``__c11_atomic_fetch_xor``
+
+The macros ``__ATOMIC_RELAXED``, ``__ATOMIC_CONSUME``, ``__ATOMIC_ACQUIRE``,
+``__ATOMIC_RELEASE``, ``__ATOMIC_ACQ_REL``, and ``__ATOMIC_SEQ_CST`` are
+provided, with values corresponding to the enumerators of C11's
+``memory_order`` enumeration.
 
 Low-level ARM exclusive memory builtins
 ---------------------------------------

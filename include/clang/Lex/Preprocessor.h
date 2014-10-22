@@ -92,7 +92,7 @@ class Preprocessor : public RefCountedBase<Preprocessor> {
   const TargetInfo  *Target;
   FileManager       &FileMgr;
   SourceManager     &SourceMgr;
-  ScratchBuffer     *ScratchBuf;
+  std::unique_ptr<ScratchBuffer> ScratchBuf;
   HeaderSearch      &HeaderInfo;
   ModuleLoader      &TheModuleLoader;
 
@@ -192,11 +192,11 @@ class Preprocessor : public RefCountedBase<Preprocessor> {
 
   /// \brief Tracks all of the pragmas that the client registered
   /// with this preprocessor.
-  PragmaNamespace *PragmaHandlers;
+  std::unique_ptr<PragmaNamespace> PragmaHandlers;
 
   /// \brief Pragma handlers of the original source is stored here during the
   /// parsing of a model file.
-  PragmaNamespace *PragmaHandlersBackup;
+  std::unique_ptr<PragmaNamespace> PragmaHandlersBackup;
 
   /// \brief Tracks all of the comment handlers that the client registered
   /// with this preprocessor.
@@ -254,7 +254,7 @@ class Preprocessor : public RefCountedBase<Preprocessor> {
   /// of bytes will place the lexer at the start of a line.
   ///
   /// This is used when loading a precompiled preamble.
-  std::pair<unsigned, bool> SkipMainFilePreamble;
+  std::pair<int, bool> SkipMainFilePreamble;
 
   /// \brief The current top of the stack that we're lexing from if
   /// not expanding a macro and we are lexing directly from source code.
@@ -338,7 +338,7 @@ class Preprocessor : public RefCountedBase<Preprocessor> {
 
   /// \brief Actions invoked when some preprocessor activity is
   /// encountered (e.g. a file is \#included, etc).
-  PPCallbacks *Callbacks;
+  std::unique_ptr<PPCallbacks> Callbacks;
 
   struct MacroExpandsInfo {
     Token Tok;
@@ -567,6 +567,9 @@ public:
   /// expansions going on at the time.
   PreprocessorLexer *getCurrentFileLexer() const;
 
+  /// \brief Return the submodule owning the file being lexed.
+  Module *getCurrentSubmodule() const { return CurSubmodule; }
+
   /// \brief Returns the FileID for the preprocessor predefines.
   FileID getPredefinesFileID() const { return PredefinesFileID; }
 
@@ -575,11 +578,12 @@ public:
   ///
   /// Note that this class takes ownership of any PPCallbacks object given to
   /// it.
-  PPCallbacks *getPPCallbacks() const { return Callbacks; }
-  void addPPCallbacks(PPCallbacks *C) {
+  PPCallbacks *getPPCallbacks() const { return Callbacks.get(); }
+  void addPPCallbacks(std::unique_ptr<PPCallbacks> C) {
     if (Callbacks)
-      C = new PPChainedCallbacks(C, Callbacks);
-    Callbacks = C;
+      C = llvm::make_unique<PPChainedCallbacks>(std::move(C),
+                                                std::move(Callbacks));
+    Callbacks = std::move(C);
   }
   /// \}
 
@@ -1319,6 +1323,7 @@ public:
   /// reference is for system \#include's or not (i.e. using <> instead of "").
   const FileEntry *LookupFile(SourceLocation FilenameLoc, StringRef Filename,
                               bool isAngled, const DirectoryLookup *FromDir,
+                              const FileEntry *FromFile,
                               const DirectoryLookup *&CurDir,
                               SmallVectorImpl<char> *SearchPath,
                               SmallVectorImpl<char> *RelativePath,
@@ -1360,6 +1365,7 @@ public:
 private:
 
   void PushIncludeMacroStack() {
+    assert(CurLexerKind != CLK_CachingLexer && "cannot push a caching lexer");
     IncludeMacroStack.push_back(IncludeStackInfo(
         CurLexerKind, CurSubmodule, std::move(CurLexer), std::move(CurPTHLexer),
         CurPPLexer, std::move(CurTokenLexer), CurDirLookup));
@@ -1532,6 +1538,7 @@ private:
   void HandleIncludeDirective(SourceLocation HashLoc,
                               Token &Tok,
                               const DirectoryLookup *LookupFrom = nullptr,
+                              const FileEntry *LookupFromFile = nullptr,
                               bool isImport = false);
   void HandleIncludeNextDirective(SourceLocation HashLoc, Token &Tok);
   void HandleIncludeMacrosDirective(SourceLocation HashLoc, Token &Tok);

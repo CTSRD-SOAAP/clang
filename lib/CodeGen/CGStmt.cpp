@@ -185,6 +185,9 @@ void CodeGenFunction::EmitStmt(const Stmt *S) {
   case Stmt::OMPForDirectiveClass:
     EmitOMPForDirective(cast<OMPForDirective>(*S));
     break;
+  case Stmt::OMPForSimdDirectiveClass:
+    EmitOMPForSimdDirective(cast<OMPForSimdDirective>(*S));
+    break;
   case Stmt::OMPSectionsDirectiveClass:
     EmitOMPSectionsDirective(cast<OMPSectionsDirective>(*S));
     break;
@@ -202,6 +205,9 @@ void CodeGenFunction::EmitStmt(const Stmt *S) {
     break;
   case Stmt::OMPParallelForDirectiveClass:
     EmitOMPParallelForDirective(cast<OMPParallelForDirective>(*S));
+    break;
+  case Stmt::OMPParallelForSimdDirectiveClass:
+    EmitOMPParallelForSimdDirective(cast<OMPParallelForSimdDirective>(*S));
     break;
   case Stmt::OMPParallelSectionsDirectiveClass:
     EmitOMPParallelSectionsDirective(cast<OMPParallelSectionsDirective>(*S));
@@ -226,6 +232,12 @@ void CodeGenFunction::EmitStmt(const Stmt *S) {
     break;
   case Stmt::OMPAtomicDirectiveClass:
     EmitOMPAtomicDirective(cast<OMPAtomicDirective>(*S));
+    break;
+  case Stmt::OMPTargetDirectiveClass:
+    EmitOMPTargetDirective(cast<OMPTargetDirective>(*S));
+    break;
+  case Stmt::OMPTeamsDirectiveClass:
+    EmitOMPTeamsDirective(cast<OMPTeamsDirective>(*S));
     break;
   }
 }
@@ -589,8 +601,6 @@ void CodeGenFunction::EmitCondBrHints(llvm::LLVMContext &Context,
 
     LoopHintAttr::OptionType Option = LH->getOption();
     LoopHintAttr::LoopHintState State = LH->getState();
-    int ValueInt = LH->getValue();
-
     const char *MetadataName;
     switch (Option) {
     case LoopHintAttr::Vectorize:
@@ -610,6 +620,15 @@ void CodeGenFunction::EmitCondBrHints(llvm::LLVMContext &Context,
       MetadataName = "llvm.loop.unroll.count";
       break;
     }
+
+    Expr *ValueExpr = LH->getValue();
+    int ValueInt = 1;
+    if (ValueExpr) {
+      llvm::APSInt ValueAPS =
+          ValueExpr->EvaluateKnownConstInt(CGM.getContext());
+      ValueInt = static_cast<int>(ValueAPS.getSExtValue());
+    }
+
     llvm::Value *Value;
     llvm::MDString *Name;
     switch (Option) {

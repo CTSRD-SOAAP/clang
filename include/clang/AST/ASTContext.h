@@ -30,6 +30,7 @@
 #include "clang/Basic/LangOptions.h"
 #include "clang/Basic/OperatorKinds.h"
 #include "clang/Basic/PartialDiagnostic.h"
+#include "clang/Basic/SanitizerBlacklist.h"
 #include "clang/Basic/VersionTuple.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/FoldingSet.h"
@@ -392,6 +393,10 @@ private:
   ///  this ASTContext object.
   LangOptions &LangOpts;
 
+  /// \brief Blacklist object that is used by sanitizers to decide which
+  /// entities should not be instrumented.
+  std::unique_ptr<SanitizerBlacklist> SanitizerBL;
+
   /// \brief The allocator used to create AST objects.
   ///
   /// AST objects are never destructed; rather, all memory associated with the
@@ -461,11 +466,12 @@ public:
   /// 'NodeT' can be one of Decl, Stmt, Type, TypeLoc,
   /// NestedNameSpecifier or NestedNameSpecifierLoc.
   template <typename NodeT>
-  ParentVector getParents(const NodeT &Node) {
+  ArrayRef<ast_type_traits::DynTypedNode> getParents(const NodeT &Node) {
     return getParents(ast_type_traits::DynTypedNode::create(Node));
   }
 
-  ParentVector getParents(const ast_type_traits::DynTypedNode &Node);
+  ArrayRef<ast_type_traits::DynTypedNode>
+  getParents(const ast_type_traits::DynTypedNode &Node);
 
   const clang::PrintingPolicy &getPrintingPolicy() const {
     return PrintingPolicy;
@@ -515,6 +521,10 @@ public:
   bool AtomicUsesUnsupportedLibcall(const AtomicExpr *E) const;
   
   const LangOptions& getLangOpts() const { return LangOpts; }
+
+  const SanitizerBlacklist &getSanitizerBlacklist() const {
+    return *SanitizerBL;
+  }
 
   DiagnosticsEngine &getDiagnostics() const;
 
@@ -2318,6 +2328,31 @@ private:
   std::unique_ptr<ParentMap> AllParents;
 
   std::unique_ptr<VTableContextBase> VTContext;
+
+public:
+  enum PragmaSectionFlag : unsigned {
+    PSF_None = 0,
+    PSF_Read = 0x1,
+    PSF_Write = 0x2,
+    PSF_Execute = 0x4,
+    PSF_Implicit = 0x8,
+    PSF_Invalid = 0x80000000U,
+  };
+
+  struct SectionInfo {
+    DeclaratorDecl *Decl;
+    SourceLocation PragmaSectionLocation;
+    int SectionFlags;
+    SectionInfo() {}
+    SectionInfo(DeclaratorDecl *Decl,
+                SourceLocation PragmaSectionLocation,
+                int SectionFlags)
+      : Decl(Decl),
+        PragmaSectionLocation(PragmaSectionLocation),
+        SectionFlags(SectionFlags) {}
+  };
+
+  llvm::StringMap<SectionInfo> SectionInfos;
 };
 
 /// \brief Utility function for constructing a nullary selector.
@@ -2355,9 +2390,9 @@ static inline Selector GetUnarySelector(StringRef name, ASTContext& Ctx) {
 /// // Specific alignment
 /// IntegerLiteral *Ex2 = new (Context, 4) IntegerLiteral(arguments);
 /// @endcode
-/// Please note that you cannot use delete on the pointer; it must be
-/// deallocated using an explicit destructor call followed by
-/// @c Context.Deallocate(Ptr).
+/// Memory allocated through this placement new operator does not need to be
+/// explicitly freed, as ASTContext will free all of this memory when it gets
+/// destroyed. Please note that you cannot use delete on the pointer.
 ///
 /// @param Bytes The number of bytes to allocate. Calculated by the compiler.
 /// @param C The ASTContext that provides the allocator.
@@ -2392,9 +2427,9 @@ inline void operator delete(void *Ptr, const clang::ASTContext &C, size_t) {
 /// // Specific alignment
 /// char *data = new (Context, 4) char[10];
 /// @endcode
-/// Please note that you cannot use delete on the pointer; it must be
-/// deallocated using an explicit destructor call followed by
-/// @c Context.Deallocate(Ptr).
+/// Memory allocated through this placement new[] operator does not need to be
+/// explicitly freed, as ASTContext will free all of this memory when it gets
+/// destroyed. Please note that you cannot use delete on the pointer.
 ///
 /// @param Bytes The number of bytes to allocate. Calculated by the compiler.
 /// @param C The ASTContext that provides the allocator.

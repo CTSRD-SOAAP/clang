@@ -23,3 +23,28 @@ __attribute__((naked)) int t5(int x) {
   asm("movl x, %eax");
   asm("retl");
 }
+
+__attribute__((naked)) void t6() {
+  ;
+}
+
+__attribute__((naked)) void t7() {
+  asm("movl $42, %eax");
+  ;
+}
+
+extern int x, y;
+
+__attribute__((naked)) void t8(int z) { // expected-note{{attribute is here}}
+  __asm__ ("movl $42, %1"
+           : "=r"(x),
+             "=r"(z) // expected-error{{parameter references not allowed in naked functions}}
+           );
+}
+
+__attribute__((naked)) void t9(int z) { // expected-note{{attribute is here}}
+  __asm__ ("movl %eax, %1"
+           : : "r"(x),
+               "r"(z) // expected-error{{parameter references not allowed in naked functions}}
+           );
+}

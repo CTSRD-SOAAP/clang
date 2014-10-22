@@ -47,6 +47,8 @@ struct FormatStyle {
     LK_None,
     /// Should be used for C, C++, ObjectiveC, ObjectiveC++.
     LK_Cpp,
+    /// Should be used for Java.
+    LK_Java,
     /// Should be used for JavaScript.
     LK_JavaScript,
     /// Should be used for Protocol Buffers
@@ -150,9 +152,13 @@ struct FormatStyle {
   /// commonly have different usage patterns and a number of special cases.
   unsigned SpacesBeforeTrailingComments;
 
-  /// \brief If \c false, a function call's or function definition's parameters
-  /// will either all be on the same line or will have one line each.
+  /// \brief If \c false, a function declaration's or function definition's
+  /// parameters will either all be on the same line or will have one line each.
   bool BinPackParameters;
+
+  /// \brief If \c false, a function call's arguments will either be all on the
+  /// same line or will have one line each.
+  bool BinPackArguments;
 
   /// \brief If \c true, clang-format detects whether function calls and
   /// definitions are formatted with one parameter per line.
@@ -194,6 +200,9 @@ struct FormatStyle {
   /// \brief If \c true, <tt>while (true) continue;</tt> can be put on a
   /// single line.
   bool AllowShortLoopsOnASingleLine;
+
+  /// \brief If \c true, short case labels will be contracted to a single line.
+  bool AllowShortCaseLabelsOnASingleLine;
 
   /// \brief Different styles for merging short functions containing at most one
   /// statement.
@@ -263,8 +272,18 @@ struct FormatStyle {
   /// \brief The way to use tab characters in the resulting file.
   UseTabStyle UseTab;
 
-  /// \brief If \c true, binary operators will be placed after line breaks.
-  bool BreakBeforeBinaryOperators;
+  /// \brief The style of breaking before or after binary operators.
+  enum BinaryOperatorStyle {
+    /// Break after operators.
+    BOS_None,
+    /// Break before operators that aren't assignments.
+    BOS_NonAssignment,
+    /// Break before operators.
+    BOS_All,
+  };
+
+  /// \brief The way to wrap binary operators.
+  BinaryOperatorStyle BreakBeforeBinaryOperators;
 
   /// \brief If \c true, ternary operators will be placed after line breaks.
   bool BreakBeforeTernaryOperators;
@@ -390,6 +409,7 @@ struct FormatStyle {
            AlwaysBreakBeforeMultilineStrings ==
                R.AlwaysBreakBeforeMultilineStrings &&
            BinPackParameters == R.BinPackParameters &&
+           BinPackArguments == R.BinPackArguments &&
            BreakBeforeBinaryOperators == R.BreakBeforeBinaryOperators &&
            BreakBeforeTernaryOperators == R.BreakBeforeTernaryOperators &&
            BreakBeforeBraces == R.BreakBeforeBraces &&
@@ -487,21 +507,28 @@ std::string configurationAsText(const FormatStyle &Style);
 /// \brief Reformats the given \p Ranges in the token stream coming out of
 /// \c Lex.
 ///
+/// DEPRECATED: Do not use.
+tooling::Replacements reformat(const FormatStyle &Style, Lexer &Lex,
+                               SourceManager &SourceMgr,
+                               ArrayRef<CharSourceRange> Ranges);
+
+/// \brief Reformats the given \p Ranges in the file \p ID.
+///
 /// Each range is extended on either end to its next bigger logic unit, i.e.
 /// everything that might influence its formatting or might be influenced by its
 /// formatting.
 ///
 /// Returns the \c Replacements necessary to make all \p Ranges comply with
 /// \p Style.
-tooling::Replacements reformat(const FormatStyle &Style, Lexer &Lex,
-                               SourceManager &SourceMgr,
-                               std::vector<CharSourceRange> Ranges);
+tooling::Replacements reformat(const FormatStyle &Style,
+                               SourceManager &SourceMgr, FileID ID,
+                               ArrayRef<CharSourceRange> Ranges);
 
 /// \brief Reformats the given \p Ranges in \p Code.
 ///
 /// Otherwise identical to the reformat() function consuming a \c Lexer.
 tooling::Replacements reformat(const FormatStyle &Style, StringRef Code,
-                               std::vector<tooling::Range> Ranges,
+                               ArrayRef<tooling::Range> Ranges,
                                StringRef FileName = "<stdin>");
 
 /// \brief Returns the \c LangOpts that the formatter expects you to set.

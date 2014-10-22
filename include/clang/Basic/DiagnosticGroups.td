@@ -133,14 +133,14 @@ def CXX98CompatUnnamedTypeTemplateArgs :
   DiagGroup<"c++98-compat-unnamed-type-template-args">;
 
 def CXX98Compat : DiagGroup<"c++98-compat",
-                            [CXX98CompatBindToTemporaryCopy,
-                             CXX98CompatLocalTypeTemplateArgs,
+                            [CXX98CompatLocalTypeTemplateArgs,
                              CXX98CompatUnnamedTypeTemplateArgs,
                              CXXPre14Compat,
                              CXXPre1zCompat]>;
 // Warnings for C++11 features which are Extensions in C++98 mode.
 def CXX98CompatPedantic : DiagGroup<"c++98-compat-pedantic",
                                     [CXX98Compat,
+                                     CXX98CompatBindToTemporaryCopy,
                                      CXXPre14CompatPedantic,
                                      CXXPre1zCompatPedantic]>;
 
@@ -231,6 +231,7 @@ def MismatchedParameterTypes : DiagGroup<"mismatched-parameter-types">;
 def MismatchedReturnTypes : DiagGroup<"mismatched-return-types">;
 def MismatchedTags : DiagGroup<"mismatched-tags">;
 def MissingFieldInitializers : DiagGroup<"missing-field-initializers">;
+def ModuleBuild : DiagGroup<"module-build">;
 def ModuleConflict : DiagGroup<"module-conflict">;
 def NewlineEOF : DiagGroup<"newline-eof">;
 def NullArithmetic : DiagGroup<"null-arithmetic">;
@@ -350,6 +351,7 @@ def InvalidOffsetof : DiagGroup<"invalid-offsetof">;
 def : DiagGroup<"strict-prototypes">;
 def StrictSelector : DiagGroup<"strict-selector-match">;
 def MethodDuplicate : DiagGroup<"duplicate-method-match">;
+def ObjCCStringFormat : DiagGroup<"cstring-format-directive">;
 def CoveredSwitchDefault : DiagGroup<"covered-switch-default">;
 def SwitchBool     : DiagGroup<"switch-bool">;
 def SwitchEnum     : DiagGroup<"switch-enum">;
@@ -402,6 +404,7 @@ def UnusedValue : DiagGroup<"unused-value", [UnusedComparison, UnusedResult]>;
 def UnusedConstVariable : DiagGroup<"unused-const-variable">;
 def UnusedVariable : DiagGroup<"unused-variable",
                                [UnusedConstVariable]>;
+def UnusedLocalTypedef : DiagGroup<"unused-local-typedef">;
 def UnusedPropertyIvar :  DiagGroup<"unused-property-ivar">;
 def UsedButMarkedUnused : DiagGroup<"used-but-marked-unused">;
 def UserDefinedLiterals : DiagGroup<"user-defined-literals">;
@@ -526,7 +529,7 @@ def Unused : DiagGroup<"unused",
                        [UnusedArgument, UnusedFunction, UnusedLabel,
                         // UnusedParameter, (matches GCC's behavior)
                         // UnusedMemberFunction, (clean-up llvm before enabling)
-                        UnusedPrivateField,
+                        UnusedPrivateField, UnusedLocalTypedef,
                         UnusedValue, UnusedVariable, UnusedPropertyIvar]>,
                         DiagCategory<"Unused Entity Issue">;
 
@@ -591,11 +594,13 @@ def Most : DiagGroup<"most", [
 def ThreadSafetyAttributes : DiagGroup<"thread-safety-attributes">;
 def ThreadSafetyAnalysis   : DiagGroup<"thread-safety-analysis">;
 def ThreadSafetyPrecise    : DiagGroup<"thread-safety-precise">;
+def ThreadSafetyReference  : DiagGroup<"thread-safety-reference">;
 def ThreadSafetyNegative   : DiagGroup<"thread-safety-negative">;
 def ThreadSafety : DiagGroup<"thread-safety",
                              [ThreadSafetyAttributes, 
                               ThreadSafetyAnalysis,
-                              ThreadSafetyPrecise]>;
+                              ThreadSafetyPrecise,
+                              ThreadSafetyReference]>;
 def ThreadSafetyVerbose : DiagGroup<"thread-safety-verbose">;
 def ThreadSafetyBeta : DiagGroup<"thread-safety-beta">;
 
@@ -622,6 +627,8 @@ def : DiagGroup<"int-conversions",
                 [IntConversion]>; // -Wint-conversions = -Wint-conversion
 def : DiagGroup<"vector-conversions",
                 [VectorConversion]>; // -Wvector-conversions = -Wvector-conversion
+def : DiagGroup<"unused-local-typedefs", [UnusedLocalTypedef]>;
+                // -Wunused-local-typedefs = -Wunused-local-typedef
 
 // A warning group for warnings that we want to have on by default in clang,
 // but which aren't on by default in GCC.
@@ -719,6 +726,9 @@ def BackendOptimizationFailure : DiagGroup<"pass-failed">;
 // Instrumentation based profiling warnings.
 def ProfileInstrOutOfDate : DiagGroup<"profile-instr-out-of-date">;
 def ProfileInstrUnprofiled : DiagGroup<"profile-instr-unprofiled">;
+
+// AddressSanitizer frontent instrumentation remarks.
+def SanitizeAddressRemarks : DiagGroup<"sanitize-address">;
 
 // A warning group for warnings about code that clang accepts when
 // compiling CUDA C/C++ but which is not compatible with the CUDA spec.

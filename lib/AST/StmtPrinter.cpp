@@ -836,6 +836,11 @@ void StmtPrinter::VisitOMPForDirective(OMPForDirective *Node) {
   PrintOMPExecutableDirective(Node);
 }
 
+void StmtPrinter::VisitOMPForSimdDirective(OMPForSimdDirective *Node) {
+  Indent() << "#pragma omp for simd ";
+  PrintOMPExecutableDirective(Node);
+}
+
 void StmtPrinter::VisitOMPSectionsDirective(OMPSectionsDirective *Node) {
   Indent() << "#pragma omp sections ";
   PrintOMPExecutableDirective(Node);
@@ -868,6 +873,12 @@ void StmtPrinter::VisitOMPCriticalDirective(OMPCriticalDirective *Node) {
 
 void StmtPrinter::VisitOMPParallelForDirective(OMPParallelForDirective *Node) {
   Indent() << "#pragma omp parallel for ";
+  PrintOMPExecutableDirective(Node);
+}
+
+void StmtPrinter::VisitOMPParallelForSimdDirective(
+    OMPParallelForSimdDirective *Node) {
+  Indent() << "#pragma omp parallel for simd ";
   PrintOMPExecutableDirective(Node);
 }
 
@@ -909,6 +920,16 @@ void StmtPrinter::VisitOMPOrderedDirective(OMPOrderedDirective *Node) {
 
 void StmtPrinter::VisitOMPAtomicDirective(OMPAtomicDirective *Node) {
   Indent() << "#pragma omp atomic ";
+  PrintOMPExecutableDirective(Node);
+}
+
+void StmtPrinter::VisitOMPTargetDirective(OMPTargetDirective *Node) {
+  Indent() << "#pragma omp target ";
+  PrintOMPExecutableDirective(Node);
+}
+
+void StmtPrinter::VisitOMPTeamsDirective(OMPTeamsDirective *Node) {
+  Indent() << "#pragma omp teams ";
   PrintOMPExecutableDirective(Node);
 }
 
@@ -983,28 +1004,7 @@ void StmtPrinter::VisitObjCSubscriptRefExpr(ObjCSubscriptRefExpr *Node) {
 }
 
 void StmtPrinter::VisitPredefinedExpr(PredefinedExpr *Node) {
-  switch (Node->getIdentType()) {
-    default:
-      llvm_unreachable("unknown case");
-    case PredefinedExpr::Func:
-      OS << "__func__";
-      break;
-    case PredefinedExpr::Function:
-      OS << "__FUNCTION__";
-      break;
-    case PredefinedExpr::FuncDName:
-      OS << "__FUNCDNAME__";
-      break;
-    case PredefinedExpr::FuncSig:
-      OS << "__FUNCSIG__";
-      break;
-    case PredefinedExpr::LFunction:
-      OS << "L__FUNCTION__";
-      break;
-    case PredefinedExpr::PrettyFunction:
-      OS << "__PRETTY_FUNCTION__";
-      break;
-  }
+  OS << PredefinedExpr::getIdentTypeName(Node->getIdentType());
 }
 
 void StmtPrinter::VisitCharacterLiteral(CharacterLiteral *Node) {

@@ -685,7 +685,10 @@ void UnwrappedLineParser::parseStructuralElement() {
   case tok::kw_public:
   case tok::kw_protected:
   case tok::kw_private:
-    parseAccessSpecifier();
+    if (Style.Language == FormatStyle::LK_Java)
+      nextToken();
+    else
+      parseAccessSpecifier();
     return;
   case tok::kw_if:
     parseIfThenElse();
@@ -1372,9 +1375,10 @@ void UnwrappedLineParser::parseRecord() {
     }
     // The actual identifier can be a nested name specifier, and in macros
     // it is often token-pasted.
-    while (FormatTok->Tok.is(tok::identifier) ||
-           FormatTok->Tok.is(tok::coloncolon) ||
-           FormatTok->Tok.is(tok::hashhash))
+    while (
+        FormatTok->is(tok::identifier) || FormatTok->is(tok::coloncolon) ||
+        FormatTok->is(tok::hashhash) ||
+        (Style.Language == FormatStyle::LK_Java && FormatTok->is(tok::period)))
       nextToken();
 
     // Note that parsing away template declarations here leads to incorrectly
@@ -1405,6 +1409,9 @@ void UnwrappedLineParser::parseRecord() {
   // We fall through to parsing a structural element afterwards, so
   // class A {} n, m;
   // will end up in one unwrapped line.
+  // This does not apply for Java.
+  if (Style.Language == FormatStyle::LK_Java)
+    addUnwrappedLine();
 }
 
 void UnwrappedLineParser::parseObjCProtocolList() {

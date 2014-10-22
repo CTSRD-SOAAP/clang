@@ -403,13 +403,13 @@ Compilation *Driver::BuildCompilation(ArrayRef<const char *> ArgList) {
 // preprocessed source file(s).  Request that the developer attach the
 // diagnostic information to a bug report.
 void Driver::generateCompilationDiagnostics(Compilation &C,
-                                            const Command *FailingCommand) {
+                                            const Command &FailingCommand) {
   if (C.getArgs().hasArg(options::OPT_fno_crash_diagnostics))
     return;
 
   // Don't try to generate diagnostics for link or dsymutil jobs.
-  if (FailingCommand && (FailingCommand->getCreator().isLinkJob() ||
-                         FailingCommand->getCreator().isDsymutilJob()))
+  if (FailingCommand.getCreator().isLinkJob() ||
+      FailingCommand.getCreator().isDsymutilJob())
     return;
 
   // Print the version of the compiler.
@@ -424,15 +424,7 @@ void Driver::generateCompilationDiagnostics(Compilation &C,
   CCGenDiagnostics = true;
 
   // Save the original job command(s).
-  std::string Cmd;
-  llvm::raw_string_ostream OS(Cmd);
-  if (FailingCommand)
-    FailingCommand->Print(OS, "\n", /*Quote*/ false, /*CrashReport*/ true);
-  else
-    // Crash triggered by FORCE_CLANG_DIAGNOSTICS_CRASH, which doesn't have an
-    // associated FailingCommand, so just pass all jobs.
-    C.getJobs().Print(OS, "\n", /*Quote*/ false, /*CrashReport*/ true);
-  OS.flush();
+  Command Cmd = FailingCommand;
 
   // Keep track of whether we produce any errors while trying to produce
   // preprocessed sources.
@@ -512,72 +504,81 @@ void Driver::generateCompilationDiagnostics(Compilation &C,
   SmallVector<std::pair<int, const Command *>, 4> FailingCommands;
   C.ExecuteJob(C.getJobs(), FailingCommands);
 
-  // If the command succeeded, we are done.
-  if (FailingCommands.empty()) {
-    Diag(clang::diag::note_drv_command_failed_diag_msg)
-      << "\n********************\n\n"
-      "PLEASE ATTACH THE FOLLOWING FILES TO THE BUG REPORT:\n"
-      "Preprocessed source(s) and associated run script(s) are located at:";
-    ArgStringList Files = C.getTempFiles();
-    for (ArgStringList::const_iterator it = Files.begin(), ie = Files.end();
-         it != ie; ++it) {
-      Diag(clang::diag::note_drv_command_failed_diag_msg) << *it;
-      std::string Script = StringRef(*it).rsplit('.').first;
-      // In some cases (modules) we'll dump extra data to help with reproducing
-      // the crash into a directory next to the output.
-      SmallString<128> VFS;
-      if (llvm::sys::fs::exists(Script + ".cache")) {
-        Diag(clang::diag::note_drv_command_failed_diag_msg)
-            << Script + ".cache";
-        VFS = llvm::sys::path::filename(Script + ".cache");
-        llvm::sys::path::append(VFS, "vfs", "vfs.yaml");
-      }
-
-      std::error_code EC;
-      Script += ".sh";
-      llvm::raw_fd_ostream ScriptOS(Script, EC, llvm::sys::fs::F_Excl);
-      if (EC) {
-        Diag(clang::diag::note_drv_command_failed_diag_msg)
-            << "Error generating run script: " + Script + " " + EC.message();
-      } else {
-        // Replace the original filename with the preprocessed one.
-        size_t I, E;
-        I = Cmd.find("-main-file-name ");
-        assert (I != std::string::npos && "Expected to find -main-file-name");
-        I += 16;
-        E = Cmd.find(" ", I);
-        assert (E != std::string::npos && "-main-file-name missing argument?");
-        StringRef OldFilename = StringRef(Cmd).slice(I, E);
-        StringRef NewFilename = llvm::sys::path::filename(*it);
-        I = StringRef(Cmd).rfind(OldFilename);
-        E = I + OldFilename.size();
-        if (E + 1 < Cmd.size() && Cmd[E] == '"')
-          ++E;  // Replace a trailing quote if present.
-        I = Cmd.rfind(" ", I) + 1;
-        Cmd.replace(I, E - I, NewFilename.data(), NewFilename.size());
-        if (!VFS.empty()) {
-          // Add the VFS overlay to the reproduction script.
-          I += NewFilename.size();
-          Cmd.insert(I, std::string(" -ivfsoverlay ") + VFS.c_str());
-        }
-        ScriptOS << Cmd;
-        Diag(clang::diag::note_drv_command_failed_diag_msg) << Script;
-      }
-    }
-    Diag(clang::diag::note_drv_command_failed_diag_msg)
-      << "\n\n********************";
-  } else {
-    // Failure, remove preprocessed files.
+  // If any of the preprocessing commands failed, clean up and exit.
+  if (!FailingCommands.empty()) {
     if (!C.getArgs().hasArg(options::OPT_save_temps))
       C.CleanupFileList(C.getTempFiles(), true);
 
     Diag(clang::diag::note_drv_command_failed_diag_msg)
       << "Error generating preprocessed source(s).";
+    return;
   }
+
+  const ArgStringList &TempFiles = C.getTempFiles();
+  if (TempFiles.empty()) {
+    Diag(clang::diag::note_drv_command_failed_diag_msg)
+      << "Error generating preprocessed source(s).";
+    return;
+  }
+
+  Diag(clang::diag::note_drv_command_failed_diag_msg)
+      << "\n********************\n\n"
+         "PLEASE ATTACH THE FOLLOWING FILES TO THE BUG REPORT:\n"
+         "Preprocessed source(s) and associated run script(s) are located at:";
+
+  SmallString<128> VFS;
+  for (const char *TempFile : TempFiles) {
+    Diag(clang::diag::note_drv_command_failed_diag_msg) << TempFile;
+    if (StringRef(TempFile).endswith(".cache")) {
+      // In some cases (modules) we'll dump extra data to help with reproducing
+      // the crash into a directory next to the output.
+      VFS = llvm::sys::path::filename(TempFile);
+      llvm::sys::path::append(VFS, "vfs", "vfs.yaml");
+    }
+  }
+
+  // Assume associated files are based off of the first temporary file.
+  CrashReportInfo CrashInfo(TempFiles[0], VFS);
+
+  std::string Script = CrashInfo.Filename.rsplit('.').first.str() + ".sh";
+  std::error_code EC;
+  llvm::raw_fd_ostream ScriptOS(Script, EC, llvm::sys::fs::F_Excl);
+  if (EC) {
+    Diag(clang::diag::note_drv_command_failed_diag_msg)
+        << "Error generating run script: " + Script + " " + EC.message();
+  } else {
+    Cmd.Print(ScriptOS, "\n", /*Quote=*/true, &CrashInfo);
+    Diag(clang::diag::note_drv_command_failed_diag_msg) << Script;
+  }
+  Diag(clang::diag::note_drv_command_failed_diag_msg)
+      << "\n\n********************";
 }
 
-int Driver::ExecuteCompilation(const Compilation &C,
-    SmallVectorImpl< std::pair<int, const Command *> > &FailingCommands) const {
+void Driver::setUpResponseFiles(Compilation &C, Job &J) {
+  if (JobList *Jobs = dyn_cast<JobList>(&J)) {
+    for (auto &Job : *Jobs)
+      setUpResponseFiles(C, Job);
+    return;
+  }
+
+  Command *CurCommand = dyn_cast<Command>(&J);
+  if (!CurCommand)
+    return;
+
+  // Since argumentsFitWithinSystemLimits() may underestimate system's capacity
+  // if the tool does not support response files, there is a chance/ that things
+  // will just work without a response file, so we silently just skip it.
+  if (CurCommand->getCreator().getResponseFilesSupport() == Tool::RF_None ||
+      llvm::sys::argumentsFitWithinSystemLimits(CurCommand->getArguments()))
+    return;
+
+  std::string TmpName = GetTemporaryPath("response", "txt");
+  CurCommand->setResponseFile(C.addTempFile(C.getArgs().MakeArgString(
+      TmpName.c_str())));
+}
+
+int Driver::ExecuteCompilation(Compilation &C,
+    SmallVectorImpl< std::pair<int, const Command *> > &FailingCommands) {
   // Just print if -### was present.
   if (C.getArgs().hasArg(options::OPT__HASH_HASH_HASH)) {
     C.getJobs().Print(llvm::errs(), "\n", true);
@@ -587,6 +588,9 @@ int Driver::ExecuteCompilation(const Compilation &C,
   // If there were errors building the compilation, quit now.
   if (Diags.hasErrorOccurred())
     return 1;
+
+  // Set up response file names for each command, if necessary
+  setUpResponseFiles(C, C.getJobs());
 
   C.ExecuteJob(C.getJobs(), FailingCommands);
 
@@ -658,9 +662,13 @@ void Driver::PrintVersion(const Compilation &C, raw_ostream &OS) const {
   OS << "Target: " << TC.getTripleString() << '\n';
 
   // Print the threading model.
-  //
-  // FIXME: Implement correctly.
-  OS << "Thread model: " << "posix" << '\n';
+  if (Arg *A = C.getArgs().getLastArg(options::OPT_mthread_model)) {
+    // Don't print if the ToolChain would have barfed on it already
+    if (TC.isThreadModelSupported(A->getValue()))
+      OS << "Thread model: " << A->getValue();
+  } else
+    OS << "Thread model: " << TC.getThreadModel();
+  OS << '\n';
 }
 
 /// PrintDiagnosticCategories - Implement the --print-diagnostic-categories
@@ -987,8 +995,8 @@ void Driver::BuildInputs(const ToolChain &TC, DerivedArgList &Args,
   Arg *InputTypeArg = nullptr;
 
   // The last /TC or /TP option sets the input type to C or C++ globally.
-  if (Arg *TCTP = Args.getLastArg(options::OPT__SLASH_TC,
-                                  options::OPT__SLASH_TP)) {
+  if (Arg *TCTP = Args.getLastArgNoClaim(options::OPT__SLASH_TC,
+                                         options::OPT__SLASH_TP)) {
     InputTypeArg = TCTP;
     InputType = TCTP->getOption().matches(options::OPT__SLASH_TC)
         ? types::TY_C : types::TY_CXX;
@@ -1076,8 +1084,17 @@ void Driver::BuildInputs(const ToolChain &TC, DerivedArgList &Args,
         }
       } else {
         assert(InputTypeArg && "InputType set w/o InputTypeArg");
-        InputTypeArg->claim();
-        Ty = InputType;
+        if (!InputTypeArg->getOption().matches(options::OPT_x)) {
+          // If emulating cl.exe, make sure that /TC and /TP don't affect input
+          // object files.
+          const char *Ext = strrchr(Value, '.');
+          if (Ext && TC.LookupTypeForExtension(Ext + 1) == types::TY_Object)
+            Ty = types::TY_Object;
+        }
+        if (Ty == types::TY_INVALID) {
+          Ty = InputType;
+          InputTypeArg->claim();
+        }
       }
 
       if (DiagnoseInputExistence(*this, Args, Value))
@@ -1177,6 +1194,15 @@ void Driver::BuildActions(const ToolChain &TC, DerivedArgList &Args,
       // It has to have a value.
       Diag(clang::diag::err_drv_missing_argument) << A->getSpelling() << 1;
       Args.eraseArg(options::OPT__SLASH_Fe);
+    }
+  }
+
+  // Diagnose misuse of /o.
+  if (Arg *A = Args.getLastArg(options::OPT__SLASH_o)) {
+    if (A->getValue()[0] == '\0') {
+      // It has to have a value.
+      Diag(clang::diag::err_drv_missing_argument) << A->getSpelling() << 1;
+      Args.eraseArg(options::OPT__SLASH_o);
     }
   }
 
@@ -1651,7 +1677,8 @@ const char *Driver::GetNamedOutputPath(Compilation &C,
     assert(AtTopLevel && isa<PreprocessJobAction>(JA));
     StringRef BaseName = llvm::sys::path::filename(BaseInput);
     StringRef NameArg;
-    if (Arg *A = C.getArgs().getLastArg(options::OPT__SLASH_Fi))
+    if (Arg *A = C.getArgs().getLastArg(options::OPT__SLASH_Fi,
+                                        options::OPT__SLASH_o))
       NameArg = A->getValue();
     return C.addResultFile(MakeCLOutputFilename(C.getArgs(), NameArg, BaseName,
                                                 types::TY_PP_C), &JA);
@@ -1698,15 +1725,17 @@ const char *Driver::GetNamedOutputPath(Compilation &C,
   const char *NamedOutput;
 
   if (JA.getType() == types::TY_Object &&
-      C.getArgs().hasArg(options::OPT__SLASH_Fo)) {
-    // The /Fo flag decides the object filename.
-    StringRef Val = C.getArgs().getLastArg(options::OPT__SLASH_Fo)->getValue();
+      C.getArgs().hasArg(options::OPT__SLASH_Fo, options::OPT__SLASH_o)) {
+    // The /Fo or /o flag decides the object filename.
+    StringRef Val = C.getArgs().getLastArg(options::OPT__SLASH_Fo,
+                                           options::OPT__SLASH_o)->getValue();
     NamedOutput = MakeCLOutputFilename(C.getArgs(), Val, BaseName,
                                        types::TY_Object);
   } else if (JA.getType() == types::TY_Image &&
-             C.getArgs().hasArg(options::OPT__SLASH_Fe)) {
-    // The /Fe flag names the linked file.
-    StringRef Val = C.getArgs().getLastArg(options::OPT__SLASH_Fe)->getValue();
+             C.getArgs().hasArg(options::OPT__SLASH_Fe, options::OPT__SLASH_o)) {
+    // The /Fe or /o flag names the linked file.
+    StringRef Val = C.getArgs().getLastArg(options::OPT__SLASH_Fe,
+                                           options::OPT__SLASH_o)->getValue();
     NamedOutput = MakeCLOutputFilename(C.getArgs(), Val, BaseName,
                                        types::TY_Image);
   } else if (JA.getType() == types::TY_Image) {
@@ -1816,10 +1845,9 @@ std::string Driver::GetProgramPath(const char *Name,
   std::string TargetSpecificExecutable(DefaultTargetTriple + "-" + Name);
   // Respect a limited subset of the '-Bprefix' functionality in GCC by
   // attempting to use this prefix when looking for program paths.
-  for (Driver::prefix_list::const_iterator it = PrefixDirs.begin(),
-       ie = PrefixDirs.end(); it != ie; ++it) {
-    if (llvm::sys::fs::is_directory(*it)) {
-      SmallString<128> P(*it);
+  for (const auto &PrefixDir : PrefixDirs) {
+    if (llvm::sys::fs::is_directory(PrefixDir)) {
+      SmallString<128> P(PrefixDir);
       llvm::sys::path::append(P, TargetSpecificExecutable);
       if (llvm::sys::fs::can_execute(Twine(P)))
         return P.str();
@@ -1828,16 +1856,15 @@ std::string Driver::GetProgramPath(const char *Name,
       if (llvm::sys::fs::can_execute(Twine(P)))
         return P.str();
     } else {
-      SmallString<128> P(*it + Name);
+      SmallString<128> P(PrefixDir + Name);
       if (llvm::sys::fs::can_execute(Twine(P)))
         return P.str();
     }
   }
 
   const ToolChain::path_list &List = TC.getProgramPaths();
-  for (ToolChain::path_list::const_iterator
-         it = List.begin(), ie = List.end(); it != ie; ++it) {
-    SmallString<128> P(*it);
+  for (const auto &Path : List) {
+    SmallString<128> P(Path);
     llvm::sys::path::append(P, TargetSpecificExecutable);
     if (llvm::sys::fs::can_execute(Twine(P)))
       return P.str();
@@ -1947,7 +1974,7 @@ static llvm::Triple computeTargetTriple(StringRef DefaultTargetTriple,
       Target.setEnvironment(llvm::Triple::CODE16);
     }
 
-    if (AT != llvm::Triple::UnknownArch)
+    if (AT != llvm::Triple::UnknownArch && AT != Target.getArch())
       Target.setArch(AT);
   }
 
@@ -2014,7 +2041,7 @@ const ToolChain &Driver::getToolChain(const ArgList &Args,
         break;
       case llvm::Triple::MSVC:
       case llvm::Triple::UnknownEnvironment:
-        TC = new toolchains::Windows(*this, Target, Args);
+        TC = new toolchains::MSVCToolChain(*this, Target, Args);
         break;
       }
       break;

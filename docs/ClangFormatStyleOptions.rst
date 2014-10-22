@@ -85,6 +85,24 @@ is applied for all input files. The format of the configuration is:
   -style='{key1: value1, key2: value2, ...}'
 
 
+Disabling Formatting on a Piece of Code
+=======================================
+
+Clang-format understands also special comments that switch formatting in a
+delimited range. The code between a comment ``// clang-format off`` or
+``/* clang-format off */`` up to a comment ``// clang-format on`` or
+``/* clang-format on */`` will not be formatted. The comments themselves
+will be formatted (aligned) normally.
+
+.. code-block:: c++
+
+  int formatted_code;
+  // clang-format off
+      void    unformatted_code  ;
+  // clang-format on
+  void formatted_code_again;
+
+
 Configuring Style in Code
 =========================
 
@@ -148,6 +166,9 @@ the configuration (without a prefix: ``Auto``).
 
   E.g., this allows ``if (a) { return; }`` to be put on a single line.
 
+**AllowShortCaseLabelsOnASingleLine** (``bool``)
+  If ``true``, short case labels will be contracted to a single line.
+
 **AllowShortFunctionsOnASingleLine** (``ShortFunctionStyle``)
   Dependent on the value, ``int f() { return 0; }`` can be put
   on a single line.
@@ -184,12 +205,26 @@ the configuration (without a prefix: ``Auto``).
   If ``true``, always break after the ``template<...>`` of a
   template declaration.
 
-**BinPackParameters** (``bool``)
-  If ``false``, a function call's or function definition's parameters
-  will either all be on the same line or will have one line each.
+**BinPackArguments** (``bool``)
+  If ``false``, a function call's arguments will either be all on the
+  same line or will have one line each.
 
-**BreakBeforeBinaryOperators** (``bool``)
-  If ``true``, binary operators will be placed after line breaks.
+**BinPackParameters** (``bool``)
+  If ``false``, a function declaration's or function definition's
+  parameters will either all be on the same line or will have one line each.
+
+**BreakBeforeBinaryOperators** (``BinaryOperatorStyle``)
+  The way to wrap binary operators.
+
+  Possible values:
+
+  * ``BOS_None`` (in configuration: ``None``)
+    Break after operators.
+  * ``BOS_NonAssignment`` (in configuration: ``NonAssignment``)
+    Break before operators that aren't assignments.
+  * ``BOS_All`` (in configuration: ``All``)
+    Break before operators.
+
 
 **BreakBeforeBraces** (``BraceBreakingStyle``)
   The brace breaking style to use.
@@ -257,7 +292,7 @@ the configuration (without a prefix: ``Auto``).
 
 **DerivePointerAlignment** (``bool``)
   If ``true``, analyze the formatted file for the most common
-  alignment of ``&`` and ``*``. ``PointerAlignment`` is then used only as fallback.
+  alignment of & and \*. ``PointerAlignment`` is then used only as fallback.
 
 **DisableFormat** (``bool``)
   Disables formatting at all.
@@ -311,6 +346,8 @@ the configuration (without a prefix: ``Auto``).
     Do not use.
   * ``LK_Cpp`` (in configuration: ``Cpp``)
     Should be used for C, C++, ObjectiveC, ObjectiveC++.
+  * ``LK_Java`` (in configuration: ``Java``)
+    Should be used for Java.
   * ``LK_JavaScript`` (in configuration: ``JavaScript``)
     Should be used for JavaScript.
   * ``LK_Proto`` (in configuration: ``Proto``)
@@ -374,6 +411,9 @@ the configuration (without a prefix: ``Auto``).
     Align pointer in the middle.
 
 
+**SpaceAfterCStyleCast** (``bool``)
+  If ``true``, a space may be inserted after C style casts.
+
 **SpaceBeforeAssignmentOperators** (``bool``)
   If ``false``, spaces will be removed before assignment operators.
 
@@ -411,9 +451,6 @@ the configuration (without a prefix: ``Auto``).
 **SpacesInCStyleCastParentheses** (``bool``)
   If ``true``, spaces may be inserted into C style casts.
 
-**SpaceAfterCStyleCast** (``bool``)
-  If ``true``, a space may be inserted after C style casts.
-
 **SpacesInContainerLiterals** (``bool``)
   If ``true``, spaces are inserted inside container literals (e.g.
   ObjC and Javascript array and dict literals).
@@ -422,8 +459,7 @@ the configuration (without a prefix: ``Auto``).
   If ``true``, spaces will be inserted after '(' and before ')'.
 
 **SpacesInSquareBrackets** (``bool``)
-  If ``true``, spaces will be inserted after '[' and before ']' in array
-  declarations and element access expressions, but not in lambdas.
+  If ``true``, spaces will be inserted after '[' and before ']'.
 
 **Standard** (``LanguageStandard``)
   Format compatible with this standard, e.g. use

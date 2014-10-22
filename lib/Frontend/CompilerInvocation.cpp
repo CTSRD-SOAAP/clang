@@ -440,6 +440,11 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
                       Args.hasArg(OPT_cl_fast_relaxed_math);
   Opts.UnwindTables = Args.hasArg(OPT_munwind_tables);
   Opts.RelocationModel = Args.getLastArgValue(OPT_mrelocation_model, "pic");
+  Opts.ThreadModel = Args.getLastArgValue(OPT_mthread_model, "posix");
+  if (Opts.ThreadModel != "posix" && Opts.ThreadModel != "single")
+    Diags.Report(diag::err_drv_invalid_value)
+        << Args.getLastArg(OPT_mthread_model)->getAsString(Args)
+        << Opts.ThreadModel;
   Opts.TrapFuncName = Args.getLastArgValue(OPT_ftrap_function_EQ);
   Opts.UseInitArray = Args.hasArg(OPT_fuse_init_array);
 
@@ -483,7 +488,6 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
   Opts.CompressDebugSections = Args.hasArg(OPT_compress_debug_sections);
   Opts.DebugCompilationDir = Args.getLastArgValue(OPT_fdebug_compilation_dir);
   Opts.LinkBitcodeFile = Args.getLastArgValue(OPT_mlink_bitcode_file);
-  Opts.SanitizerBlacklistFile = Args.getLastArgValue(OPT_fsanitize_blacklist);
   Opts.SanitizeMemoryTrackOrigins =
       getLastArgIntValue(Args, OPT_fsanitize_memory_track_origins_EQ, 0, Diags);
   Opts.SanitizeUndefinedTrapOnError =
@@ -572,8 +576,14 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
     NeedLocTracking = true;
   }
 
-  // If the user requested one of the flags in the -Rpass family, make sure
-  // that the backend tracks source location information.
+  // If the user requested to use a sample profile for PGO, then the
+  // backend will need to track source location information so the profile
+  // can be incorporated into the IR.
+  if (!Opts.SampleProfileFile.empty())
+    NeedLocTracking = true;
+
+  // If the user requested a flag that requires source locations available in
+  // the backend, make sure that the backend tracks source location information.
   if (NeedLocTracking && Opts.getDebugInfo() == CodeGenOptions::NoDebugInfo)
     Opts.setDebugInfo(CodeGenOptions::LocTrackingOnly);
 
@@ -835,7 +845,8 @@ static InputKind ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
   Opts.ASTDumpLookups = Args.hasArg(OPT_ast_dump_lookups);
   Opts.UseGlobalModuleIndex = !Args.hasArg(OPT_fno_modules_global_index);
   Opts.GenerateGlobalModuleIndex = Opts.UseGlobalModuleIndex;
-  
+  Opts.ModuleFiles = Args.getAllArgValues(OPT_fmodule_file);
+
   Opts.CodeCompleteOpts.IncludeMacros
     = Args.hasArg(OPT_code_completion_macros);
   Opts.CodeCompleteOpts.IncludeCodePatterns
@@ -1126,7 +1137,7 @@ void CompilerInvocation::setLangDefaults(LangOptions &Opts, InputKind IK,
     case IK_PreprocessedC:
     case IK_ObjC:
     case IK_PreprocessedObjC:
-      LangStd = LangStandard::lang_gnu99;
+      LangStd = LangStandard::lang_gnu11;
       break;
     case IK_CXX:
     case IK_PreprocessedCXX:
@@ -1432,6 +1443,7 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
   Opts.ObjCExceptions = Args.hasArg(OPT_fobjc_exceptions);
   Opts.CXXExceptions = Args.hasArg(OPT_fcxx_exceptions);
   Opts.SjLjExceptions = Args.hasArg(OPT_fsjlj_exceptions);
+  Opts.SEHExceptions = Args.hasArg(OPT_fseh_exceptions);
   Opts.TraditionalCPP = Args.hasArg(OPT_traditional_cpp);
 
   Opts.RTTI = !Args.hasArg(OPT_fno_rtti);
@@ -1623,6 +1635,10 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
       break;
     }
   }
+  // -fsanitize-address-field-padding=N has to be a LangOpt, parse it here.
+  Opts.Sanitize.SanitizeAddressFieldPadding =
+      getLastArgIntValue(Args, OPT_fsanitize_address_field_padding, 0, Diags);
+  Opts.Sanitize.BlacklistFile = Args.getLastArgValue(OPT_fsanitize_blacklist);
 }
 
 static void ParsePreprocessorArgs(PreprocessorOptions &Opts, ArgList &Args,

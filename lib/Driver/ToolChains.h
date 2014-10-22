@@ -487,7 +487,8 @@ public:
   AddCCKextLibArgs(const llvm::opt::ArgList &Args,
                    llvm::opt::ArgStringList &CmdArgs) const override;
 
-  virtual void addClangWarningOptions(llvm::opt::ArgStringList &CC1Args) const;
+  virtual void addClangWarningOptions(llvm::opt::ArgStringList &CC1Args)
+                                                      const override;
 
   void
   AddLinkARCArgs(const llvm::opt::ArgList &Args,
@@ -587,7 +588,6 @@ public:
   bool IsIntegratedAssemblerDefault() const override {
     switch (getTriple().getArch()) {
     case llvm::Triple::ppc:
-    case llvm::Triple::ppc64:
       return true;
     default:
       return Generic_ELF::IsIntegratedAssemblerDefault();
@@ -620,8 +620,6 @@ public:
   bool IsIntegratedAssemblerDefault() const override {
     switch (getTriple().getArch()) {
     case llvm::Triple::ppc:
-    case llvm::Triple::ppc64:
-    case llvm::Triple::ppc64le:
       return true;
     default:
       return Generic_ELF::IsIntegratedAssemblerDefault();
@@ -729,10 +727,10 @@ public:
   bool isPICDefaultForced() const override;
 };
 
-class LLVM_LIBRARY_VISIBILITY Windows : public ToolChain {
+class LLVM_LIBRARY_VISIBILITY MSVCToolChain : public ToolChain {
 public:
-  Windows(const Driver &D, const llvm::Triple &Triple,
-          const llvm::opt::ArgList &Args);
+  MSVCToolChain(const Driver &D, const llvm::Triple &Triple,
+                const llvm::opt::ArgList &Args);
 
   bool IsIntegratedAssemblerDefault() const override;
   bool IsUnwindTablesDefault() const override;

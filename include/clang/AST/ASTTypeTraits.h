@@ -53,8 +53,18 @@ public:
     return ASTNodeKind(KindToKindId<T>::Id);
   }
 
+  /// \{
+  /// \brief Construct an identifier for the dynamic type of the node
+  static ASTNodeKind getFromNode(const Decl &D);
+  static ASTNodeKind getFromNode(const Stmt &S);
+  static ASTNodeKind getFromNode(const Type &T);
+  /// \}
+
   /// \brief Returns \c true if \c this and \c Other represent the same kind.
   bool isSame(ASTNodeKind Other) const;
+
+  /// \brief Returns \c true only for the default \c ASTNodeKind()
+  bool isNone() const { return KindId == NKI_None; }
 
   /// \brief Returns \c true if \c this is a base kind of (or same as) \c Other.
   /// \param Distance If non-null, used to return the distance between \c this
@@ -68,6 +78,17 @@ public:
   bool operator<(const ASTNodeKind &Other) const {
     return KindId < Other.KindId;
   }
+
+  /// \brief Return the most derived type between \p Kind1 and \p Kind2.
+  ///
+  /// Return ASTNodeKind() if they are not related.
+  static ASTNodeKind getMostDerivedType(ASTNodeKind Kind1, ASTNodeKind Kind2);
+
+  /// \brief Return the most derived common ancestor between Kind1 and Kind2.
+  ///
+  /// Return ASTNodeKind() if they are not related.
+  static ASTNodeKind getMostDerivedCommonAncestor(ASTNodeKind Kind1,
+                                                  ASTNodeKind Kind2);
 
 private:
   /// \brief Kind ids.
@@ -184,6 +205,8 @@ public:
     return BaseConverter<T>::get(NodeKind, Storage.buffer);
   }
 
+  ASTNodeKind getNodeKind() const { return NodeKind; }
+
   /// \brief Returns a pointer that identifies the stored AST node.
   ///
   /// Note that this is not supported by all AST nodes. For AST nodes
@@ -241,7 +264,7 @@ private:
     }
     static DynTypedNode create(const BaseT &Node) {
       DynTypedNode Result;
-      Result.NodeKind = ASTNodeKind::getFromNodeKind<T>();
+      Result.NodeKind = ASTNodeKind::getFromNode(Node);
       Result.MemoizationData = &Node;
       new (Result.Storage.buffer) const BaseT * (&Node);
       return Result;

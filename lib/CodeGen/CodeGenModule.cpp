@@ -89,9 +89,7 @@ CodeGenModule::CodeGenModule(ASTContext &C, const CodeGenOptions &CGO,
       NSConcreteStackBlock(nullptr), BlockObjectAssign(nullptr),
       BlockObjectDispose(nullptr), BlockDescriptorType(nullptr),
       GenericBlockLiteralType(nullptr), LifetimeStartFn(nullptr),
-      LifetimeEndFn(nullptr), SanitizerBL(llvm::SpecialCaseList::createOrDie(
-                                  CGO.SanitizerBlacklistFile)),
-      SanitizerMD(new SanitizerMetadata(*this)) {
+      LifetimeEndFn(nullptr), SanitizerMD(new SanitizerMetadata(*this)) {
 
   // Initialize the type cache.
   llvm::LLVMContext &LLVMContext = M.getContext();
@@ -196,6 +194,10 @@ void CodeGenModule::createOpenMPRuntime() {
 
 void CodeGenModule::createCUDARuntime() {
   CUDARuntime = CreateNVCUDARuntime(*this);
+}
+
+void CodeGenModule::addReplacement(StringRef Name, llvm::Constant *C) {
+  Replacements[Name] = C;
 }
 
 void CodeGenModule::applyReplacements() {
@@ -521,11 +523,10 @@ static llvm::GlobalVariable::ThreadLocalMode GetLLVMTLSModel(
   llvm_unreachable("Invalid TLS model!");
 }
 
-void CodeGenModule::setTLSMode(llvm::GlobalVariable *GV,
-                               const VarDecl &D) const {
+void CodeGenModule::setTLSMode(llvm::GlobalValue *GV, const VarDecl &D) const {
   assert(D.getTLSKind() && "setting TLS mode on non-TLS var!");
 
-  llvm::GlobalVariable::ThreadLocalMode TLM;
+  llvm::GlobalValue::ThreadLocalMode TLM;
   TLM = GetLLVMTLSModel(CodeGenOpts.getDefaultTLSModel());
 
   // Override the TLS model if it is explicitly specified.
@@ -739,7 +740,7 @@ void CodeGenModule::SetLLVMFunctionAttributesForDefinition(const Decl *D,
     B.addAttribute(llvm::Attribute::StackProtectReq);
 
   // Add sanitizer attributes if function is not blacklisted.
-  if (!SanitizerBL.isIn(*F)) {
+  if (!isInSanitizerBlacklist(F, D->getLocation())) {
     // When AddressSanitizer is enabled, set SanitizeAddress attribute
     // unless __attribute__((no_sanitize_address)) is used.
     if (LangOpts.Sanitize.Address && !D->hasAttr<NoSanitizeAddressAttr>())
@@ -780,6 +781,16 @@ void CodeGenModule::SetCommonAttributes(const Decl *D,
 
   if (D->hasAttr<UsedAttr>())
     addUsedGlobal(GV);
+}
+
+void CodeGenModule::setAliasAttributes(const Decl *D,
+                                       llvm::GlobalValue *GV) {
+  SetCommonAttributes(D, GV);
+
+  // Process the dllexport attribute based on whether the original definition
+  // (not necessarily the aliasee) was exported.
+  if (D->hasAttr<DLLExportAttr>())
+    GV->setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
 }
 
 void CodeGenModule::setNonAliasAttributes(const Decl *D,
@@ -1157,6 +1168,52 @@ void CodeGenModule::AddGlobalAnnotations(const ValueDecl *D,
     Annotations.push_back(EmitAnnotateAttr(GV, I, D->getLocation()));
 }
 
+bool CodeGenModule::isInSanitizerBlacklist(llvm::Function *Fn,
+                                           SourceLocation Loc) const {
+  const auto &SanitizerBL = getContext().getSanitizerBlacklist();
+  // Blacklist by function name.
+  if (SanitizerBL.isBlacklistedFunction(Fn->getName()))
+    return true;
+  // Blacklist by location.
+  if (!Loc.isInvalid())
+    return SanitizerBL.isBlacklistedLocation(Loc);
+  // If location is unknown, this may be a compiler-generated function. Assume
+  // it's located in the main file.
+  auto &SM = Context.getSourceManager();
+  if (const auto *MainFile = SM.getFileEntryForID(SM.getMainFileID())) {
+    return SanitizerBL.isBlacklistedFile(MainFile->getName());
+  }
+  return false;
+}
+
+bool CodeGenModule::isInSanitizerBlacklist(llvm::GlobalVariable *GV,
+                                           SourceLocation Loc, QualType Ty,
+                                           StringRef Category) const {
+  // For now globals can be blacklisted only in ASan.
+  if (!LangOpts.Sanitize.Address)
+    return false;
+  const auto &SanitizerBL = getContext().getSanitizerBlacklist();
+  if (SanitizerBL.isBlacklistedGlobal(GV->getName(), Category))
+    return true;
+  if (SanitizerBL.isBlacklistedLocation(Loc, Category))
+    return true;
+  // Check global type.
+  if (!Ty.isNull()) {
+    // Drill down the array types: if global variable of a fixed type is
+    // blacklisted, we also don't instrument arrays of them.
+    while (auto AT = dyn_cast<ArrayType>(Ty.getTypePtr()))
+      Ty = AT->getElementType();
+    Ty = Ty.getCanonicalType().getUnqualifiedType();
+    // We allow to blacklist only record types (classes, structs etc.)
+    if (Ty->isRecordType()) {
+      std::string TypeStr = Ty.getAsString(getContext().getPrintingPolicy());
+      if (SanitizerBL.isBlacklistedType(TypeStr, Category))
+        return true;
+    }
+  }
+  return false;
+}
+
 bool CodeGenModule::MayDeferGeneration(const ValueDecl *Global) {
   // Never defer when EmitAllDecls is specified.
   if (LangOpts.EmitAllDecls)
@@ -1177,7 +1234,7 @@ llvm::Constant *CodeGenModule::GetAddrOfUuidDescriptor(
   if (llvm::GlobalVariable *GV = getModule().getNamedGlobal(Name))
     return GV;
 
-  llvm::Constant *Init = EmitUuidofInitializer(Uuid, E->getType());
+  llvm::Constant *Init = EmitUuidofInitializer(Uuid);
   assert(Init && "failed to initialize as constant");
 
   auto *GV = new llvm::GlobalVariable(
@@ -1404,9 +1461,9 @@ void CodeGenModule::EmitGlobalDefinition(GlobalDecl GD, llvm::GlobalValue *GV) {
       // Make sure to emit the definition(s) before we emit the thunks.
       // This is necessary for the generation of certain thunks.
       if (const auto *CD = dyn_cast<CXXConstructorDecl>(Method))
-        EmitCXXConstructor(CD, GD.getCtorType());
+        ABI->emitCXXStructor(CD, getFromCtorType(GD.getCtorType()));
       else if (const auto *DD = dyn_cast<CXXDestructorDecl>(Method))
-        EmitCXXDestructor(DD, GD.getDtorType());
+        ABI->emitCXXStructor(DD, getFromDtorType(GD.getDtorType()));
       else
         EmitGlobalFunctionDefinition(GD, GV);
 
@@ -1920,6 +1977,13 @@ void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D) {
   GV->setConstant(!NeedsGlobalCtor && !NeedsGlobalDtor &&
                   isTypeConstant(D->getType(), true));
 
+  // If it is in a read-only section, mark it 'constant'.
+  if (const SectionAttr *SA = D->getAttr<SectionAttr>()) {
+    const ASTContext::SectionInfo &SI = Context.SectionInfos[SA->getName()];
+    if ((SI.SectionFlags & ASTContext::PSF_Write) == 0)
+      GV->setConstant(true);
+  }
+
   GV->setAlignment(getContext().getDeclAlign(D).getQuantity());
 
   // Set the llvm linkage type as appropriate.
@@ -1930,10 +1994,9 @@ void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D) {
   // has internal linkage; all accesses should just be calls to the
   // Itanium-specified entry point, which has the normal linkage of the
   // variable.
-  if (const auto *VD = dyn_cast<VarDecl>(D))
-    if (!VD->isStaticLocal() && VD->getTLSKind() == VarDecl::TLS_Dynamic &&
-        Context.getTargetInfo().getTriple().isMacOSX())
-      Linkage = llvm::GlobalValue::InternalLinkage;
+  if (!D->isStaticLocal() && D->getTLSKind() == VarDecl::TLS_Dynamic &&
+      Context.getTargetInfo().getTriple().isMacOSX())
+    Linkage = llvm::GlobalValue::InternalLinkage;
 
   GV->setLinkage(Linkage);
   if (D->hasAttr<DLLImportAttr>())
@@ -1946,6 +2009,12 @@ void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D) {
     GV->setConstant(false);
 
   setNonAliasAttributes(D, GV);
+
+  if (D->getTLSKind() && !GV->isThreadLocal()) {
+    if (D->getTLSKind() == VarDecl::TLS_Dynamic)
+      CXXThreadLocals.push_back(std::make_pair(D, GV));
+    setTLSMode(GV, *D);
+  }
 
   // Emit the initializer function if necessary.
   if (NeedsGlobalCtor || NeedsGlobalDtor)
@@ -2314,7 +2383,7 @@ void CodeGenModule::EmitAliasDefinition(GlobalDecl GD) {
   else
     Aliasee = GetOrCreateLLVMGlobal(AA->getAliasee(),
                                     llvm::PointerType::getUnqual(DeclTy),
-                                    nullptr);
+                                    /*D=*/nullptr);
 
   // Create the new alias itself, but don't set a name yet.
   auto *GA = llvm::GlobalAlias::create(
@@ -2348,21 +2417,16 @@ void CodeGenModule::EmitAliasDefinition(GlobalDecl GD) {
   // Set attributes which are particular to an alias; this is a
   // specialization of the attributes which may be set on a global
   // variable/function.
-  if (D->hasAttr<DLLExportAttr>()) {
-    if (const auto *FD = dyn_cast<FunctionDecl>(D)) {
-      // The dllexport attribute is ignored for undefined symbols.
-      if (FD->hasBody())
-        GA->setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
-    } else {
-      GA->setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
-    }
-  } else if (D->hasAttr<WeakAttr>() ||
-             D->hasAttr<WeakRefAttr>() ||
-             D->isWeakImported()) {
+  if (D->hasAttr<WeakAttr>() || D->hasAttr<WeakRefAttr>() ||
+      D->isWeakImported()) {
     GA->setLinkage(llvm::Function::WeakAnyLinkage);
   }
 
-  SetCommonAttributes(D, GA);
+  if (const auto *VD = dyn_cast<VarDecl>(D))
+    if (VD->getTLSKind())
+      setTLSMode(GA, *VD);
+
+  setAliasAttributes(D, GA);
 }
 
 llvm::Function *CodeGenModule::getIntrinsic(unsigned IID,
@@ -2724,7 +2788,8 @@ GenerateStringLiteral(llvm::Constant *C, llvm::GlobalValue::LinkageTypes LT,
 /// GetAddrOfConstantStringFromLiteral - Return a pointer to a
 /// constant array for the given string literal.
 llvm::GlobalVariable *
-CodeGenModule::GetAddrOfConstantStringFromLiteral(const StringLiteral *S) {
+CodeGenModule::GetAddrOfConstantStringFromLiteral(const StringLiteral *S,
+                                                  StringRef Name) {
   auto Alignment =
       getContext().getAlignOfGlobalVarInChars(S->getType()).getQuantity();
 
@@ -2756,14 +2821,15 @@ CodeGenModule::GetAddrOfConstantStringFromLiteral(const StringLiteral *S) {
     GlobalVariableName = MangledNameBuffer;
   } else {
     LT = llvm::GlobalValue::PrivateLinkage;
-    GlobalVariableName = ".str";
+    GlobalVariableName = Name;
   }
 
   auto GV = GenerateStringLiteral(C, LT, *this, GlobalVariableName, Alignment);
   if (Entry)
     *Entry = GV;
 
-  SanitizerMD->reportGlobalToASan(GV, S->getStrTokenLoc(0), "<string literal>");
+  SanitizerMD->reportGlobalToASan(GV, S->getStrTokenLoc(0), "<string literal>",
+                                  QualType());
   return GV;
 }
 
@@ -3386,8 +3452,7 @@ void CodeGenModule::EmitCoverageFile() {
   }
 }
 
-llvm::Constant *CodeGenModule::EmitUuidofInitializer(StringRef Uuid,
-                                                     QualType GuidType) {
+llvm::Constant *CodeGenModule::EmitUuidofInitializer(StringRef Uuid) {
   // Sema has checked that all uuid strings are of the form
   // "12345678-1234-1234-1234-1234567890ab".
   assert(Uuid.size() == 36);
@@ -3396,6 +3461,7 @@ llvm::Constant *CodeGenModule::EmitUuidofInitializer(StringRef Uuid,
     else                                         assert(isHexDigit(Uuid[i]));
   }
 
+  // The starts of all bytes of Field3 in Uuid. Field 3 is "1234-1234567890ab".
   const unsigned Field3ValueOffsets[8] = { 19, 21, 24, 26, 28, 30, 32, 34 };
 
   llvm::Constant *Field3[8];

@@ -642,21 +642,11 @@ ASTUnit::getBufferForFile(StringRef Filename, std::string *ErrorStr) {
 }
 
 /// \brief Configure the diagnostics object for use with ASTUnit.
-void ASTUnit::ConfigureDiags(IntrusiveRefCntPtr<DiagnosticsEngine> &Diags,
-                             const char **ArgBegin, const char **ArgEnd,
+void ASTUnit::ConfigureDiags(IntrusiveRefCntPtr<DiagnosticsEngine> Diags,
                              ASTUnit &AST, bool CaptureDiagnostics) {
-  if (!Diags.get()) {
-    // No diagnostics engine was provided, so create our own diagnostics object
-    // with the default options.
-    DiagnosticConsumer *Client = nullptr;
-    if (CaptureDiagnostics)
-      Client = new StoredDiagnosticConsumer(AST.StoredDiagnostics);
-    Diags = CompilerInstance::createDiagnostics(new DiagnosticOptions(),
-                                                Client,
-                                                /*ShouldOwnClient=*/true);
-  } else if (CaptureDiagnostics) {
+  assert(Diags.get() && "no DiagnosticsEngine was provided");
+  if (CaptureDiagnostics)
     Diags->setClient(new StoredDiagnosticConsumer(AST.StoredDiagnostics));
-  }
 }
 
 std::unique_ptr<ASTUnit> ASTUnit::LoadFromASTFile(
@@ -673,7 +663,7 @@ std::unique_ptr<ASTUnit> ASTUnit::LoadFromASTFile(
     llvm::CrashRecoveryContextReleaseRefCleanup<DiagnosticsEngine> >
     DiagCleanup(Diags.get());
 
-  ConfigureDiags(Diags, nullptr, nullptr, *AST, CaptureDiagnostics);
+  ConfigureDiags(Diags, *AST, CaptureDiagnostics);
 
   AST->OnlyLocalDecls = OnlyLocalDecls;
   AST->CaptureDiagnostics = CaptureDiagnostics;
@@ -887,7 +877,8 @@ public:
   std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI,
                                                  StringRef InFile) override {
     CI.getPreprocessor().addPPCallbacks(
-     new MacroDefinitionTrackerPPCallbacks(Unit.getCurrentTopLevelHashValue()));
+        llvm::make_unique<MacroDefinitionTrackerPPCallbacks>(
+                                           Unit.getCurrentTopLevelHashValue()));
     return llvm::make_unique<TopLevelDeclTrackerConsumer>(
         Unit, Unit.getCurrentTopLevelHashValue());
   }
@@ -985,8 +976,9 @@ PrecompilePreambleAction::CreateASTConsumer(CompilerInstance &CI,
   if (!CI.getFrontendOpts().RelocatablePCH)
     Sysroot.clear();
 
-  CI.getPreprocessor().addPPCallbacks(new MacroDefinitionTrackerPPCallbacks(
-      Unit.getCurrentTopLevelHashValue()));
+  CI.getPreprocessor().addPPCallbacks(
+      llvm::make_unique<MacroDefinitionTrackerPPCallbacks>(
+                                           Unit.getCurrentTopLevelHashValue()));
   return llvm::make_unique<PrecompilePreambleConsumer>(
       Unit, this, CI.getPreprocessor(), Sysroot, OS);
 }
@@ -1275,42 +1267,44 @@ makeStandaloneRange(CharSourceRange Range, const SourceManager &SM,
   return std::make_pair(Offset, EndOffset);
 }
 
-static void makeStandaloneFixIt(const SourceManager &SM,
-                                const LangOptions &LangOpts,
-                                const FixItHint &InFix,
-                                ASTUnit::StandaloneFixIt &OutFix) {
+static ASTUnit::StandaloneFixIt makeStandaloneFixIt(const SourceManager &SM,
+                                                    const LangOptions &LangOpts,
+                                                    const FixItHint &InFix) {
+  ASTUnit::StandaloneFixIt OutFix;
   OutFix.RemoveRange = makeStandaloneRange(InFix.RemoveRange, SM, LangOpts);
   OutFix.InsertFromRange = makeStandaloneRange(InFix.InsertFromRange, SM,
                                                LangOpts);
   OutFix.CodeToInsert = InFix.CodeToInsert;
   OutFix.BeforePreviousInsertions = InFix.BeforePreviousInsertions;
+  return OutFix;
 }
 
-static void makeStandaloneDiagnostic(const LangOptions &LangOpts,
-                                     const StoredDiagnostic &InDiag,
-                                     ASTUnit::StandaloneDiagnostic &OutDiag) {
+static ASTUnit::StandaloneDiagnostic
+makeStandaloneDiagnostic(const LangOptions &LangOpts,
+                         const StoredDiagnostic &InDiag) {
+  ASTUnit::StandaloneDiagnostic OutDiag;
   OutDiag.ID = InDiag.getID();
   OutDiag.Level = InDiag.getLevel();
   OutDiag.Message = InDiag.getMessage();
   OutDiag.LocOffset = 0;
   if (InDiag.getLocation().isInvalid())
-    return;
+    return OutDiag;
   const SourceManager &SM = InDiag.getLocation().getManager();
   SourceLocation FileLoc = SM.getFileLoc(InDiag.getLocation());
   OutDiag.Filename = SM.getFilename(FileLoc);
   if (OutDiag.Filename.empty())
-    return;
+    return OutDiag;
   OutDiag.LocOffset = SM.getFileOffset(FileLoc);
   for (StoredDiagnostic::range_iterator
          I = InDiag.range_begin(), E = InDiag.range_end(); I != E; ++I) {
     OutDiag.Ranges.push_back(makeStandaloneRange(*I, SM, LangOpts));
   }
-  for (StoredDiagnostic::fixit_iterator
-         I = InDiag.fixit_begin(), E = InDiag.fixit_end(); I != E; ++I) {
-    ASTUnit::StandaloneFixIt Fix;
-    makeStandaloneFixIt(SM, LangOpts, *I, Fix);
-    OutDiag.FixIts.push_back(Fix);
-  }
+  for (StoredDiagnostic::fixit_iterator I = InDiag.fixit_begin(),
+                                        E = InDiag.fixit_end();
+       I != E; ++I)
+    OutDiag.FixIts.push_back(makeStandaloneFixIt(SM, LangOpts, *I));
+
+  return OutDiag;
 }
 
 /// \brief Attempt to build or re-use a precompiled preamble when (re-)parsing
@@ -1572,13 +1566,11 @@ ASTUnit::getMainBufferWithPrecompiledPreamble(
 
   // Transfer any diagnostics generated when parsing the preamble into the set
   // of preamble diagnostics.
-  for (stored_diag_iterator
-         I = stored_diag_afterDriver_begin(),
-         E = stored_diag_end(); I != E; ++I) {
-    StandaloneDiagnostic Diag;
-    makeStandaloneDiagnostic(Clang->getLangOpts(), *I, Diag);
-    PreambleDiagnostics.push_back(Diag);
-  }
+  for (stored_diag_iterator I = stored_diag_afterDriver_begin(),
+                            E = stored_diag_end();
+       I != E; ++I)
+    PreambleDiagnostics.push_back(
+        makeStandaloneDiagnostic(Clang->getLangOpts(), *I));
 
   Act->EndSourceFile();
 
@@ -1700,7 +1692,7 @@ ASTUnit *ASTUnit::create(CompilerInvocation *CI,
                          bool UserFilesAreVolatile) {
   std::unique_ptr<ASTUnit> AST;
   AST.reset(new ASTUnit(false));
-  ConfigureDiags(Diags, nullptr, nullptr, *AST, CaptureDiagnostics);
+  ConfigureDiags(Diags, *AST, CaptureDiagnostics);
   AST->Diagnostics = Diags;
   AST->Invocation = CI;
   AST->FileSystemOpts = CI->getFileSystemOpts();
@@ -1827,7 +1819,8 @@ ASTUnit *ASTUnit::LoadFromCompilerInvocationAction(
 
   if (Persistent && !TrackerAct) {
     Clang->getPreprocessor().addPPCallbacks(
-     new MacroDefinitionTrackerPPCallbacks(AST->getCurrentTopLevelHashValue()));
+        llvm::make_unique<MacroDefinitionTrackerPPCallbacks>(
+                                           AST->getCurrentTopLevelHashValue()));
     std::vector<std::unique_ptr<ASTConsumer>> Consumers;
     if (Clang->hasASTConsumer())
       Consumers.push_back(Clang->takeASTConsumer());
@@ -1887,7 +1880,7 @@ std::unique_ptr<ASTUnit> ASTUnit::LoadFromCompilerInvocation(
     bool IncludeBriefCommentsInCodeCompletion, bool UserFilesAreVolatile) {
   // Create the AST unit.
   std::unique_ptr<ASTUnit> AST(new ASTUnit(false));
-  ConfigureDiags(Diags, nullptr, nullptr, *AST, CaptureDiagnostics);
+  ConfigureDiags(Diags, *AST, CaptureDiagnostics);
   AST->Diagnostics = Diags;
   AST->OnlyLocalDecls = OnlyLocalDecls;
   AST->CaptureDiagnostics = CaptureDiagnostics;
@@ -1926,11 +1919,7 @@ ASTUnit *ASTUnit::LoadFromCommandLine(
     bool AllowPCHWithCompilerErrors, bool SkipFunctionBodies,
     bool UserFilesAreVolatile, bool ForSerialization,
     std::unique_ptr<ASTUnit> *ErrAST) {
-  if (!Diags.get()) {
-    // No diagnostics engine was provided, so create our own diagnostics object
-    // with the default options.
-    Diags = CompilerInstance::createDiagnostics(new DiagnosticOptions());
-  }
+  assert(Diags.get() && "no DiagnosticsEngine was provided");
 
   SmallVector<StoredDiagnostic, 4> StoredDiagnostics;
   
@@ -1965,7 +1954,7 @@ ASTUnit *ASTUnit::LoadFromCommandLine(
   // Create the AST unit.
   std::unique_ptr<ASTUnit> AST;
   AST.reset(new ASTUnit(false));
-  ConfigureDiags(Diags, ArgBegin, ArgEnd, *AST, CaptureDiagnostics);
+  ConfigureDiags(Diags, *AST, CaptureDiagnostics);
   AST->Diagnostics = Diags;
   AST->FileSystemOpts = CI->getFileSystemOpts();
   IntrusiveRefCntPtr<vfs::FileSystem> VFS =
@@ -2787,7 +2776,8 @@ struct PCHLocatorInfo {
 static bool PCHLocator(serialization::ModuleFile &M, void *UserData) {
   PCHLocatorInfo &Info = *static_cast<PCHLocatorInfo*>(UserData);
   switch (M.Kind) {
-  case serialization::MK_Module:
+  case serialization::MK_ImplicitModule:
+  case serialization::MK_ExplicitModule:
     return true; // skip dependencies.
   case serialization::MK_PCH:
     Info.Mod = &M;

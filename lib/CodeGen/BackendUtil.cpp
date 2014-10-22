@@ -62,7 +62,7 @@ private:
   PassManager *getCodeGenPasses() const {
     if (!CodeGenPasses) {
       CodeGenPasses = new PassManager();
-      CodeGenPasses->add(new DataLayoutPass(TheModule));
+      CodeGenPasses->add(new DataLayoutPass());
       if (TM)
         TM->addAnalysisPasses(*CodeGenPasses);
     }
@@ -72,7 +72,7 @@ private:
   PassManager *getPerModulePasses() const {
     if (!PerModulePasses) {
       PerModulePasses = new PassManager();
-      PerModulePasses->add(new DataLayoutPass(TheModule));
+      PerModulePasses->add(new DataLayoutPass());
       if (TM)
         TM->addAnalysisPasses(*PerModulePasses);
     }
@@ -82,7 +82,7 @@ private:
   FunctionPassManager *getPerFunctionPasses() const {
     if (!PerFunctionPasses) {
       PerFunctionPasses = new FunctionPassManager(TheModule);
-      PerFunctionPasses->add(new DataLayoutPass(TheModule));
+      PerFunctionPasses->add(new DataLayoutPass());
       if (TM)
         TM->addAnalysisPasses(*PerFunctionPasses);
     }
@@ -214,8 +214,8 @@ static void addDataFlowSanitizerPass(const PassManagerBuilder &Builder,
                                      PassManagerBase &PM) {
   const PassManagerBuilderWrapper &BuilderWrapper =
       static_cast<const PassManagerBuilderWrapper&>(Builder);
-  const CodeGenOptions &CGOpts = BuilderWrapper.getCGOpts();
-  PM.add(createDataFlowSanitizerPass(CGOpts.SanitizerBlacklistFile));
+  const LangOptions &LangOpts = BuilderWrapper.getLangOpts();
+  PM.add(createDataFlowSanitizerPass(LangOpts.Sanitize.BlacklistFile));
 }
 
 static TargetLibraryInfo *createTLI(llvm::Triple &TargetTriple,
@@ -424,6 +424,11 @@ TargetMachine *EmitAssemblyHelper::CreateTargetMachine(bool MustCreateTM) {
   }
 
   llvm::TargetOptions Options;
+
+  Options.ThreadModel =
+    llvm::StringSwitch<llvm::ThreadModel::Model>(CodeGenOpts.ThreadModel)
+      .Case("posix", llvm::ThreadModel::POSIX)
+      .Case("single", llvm::ThreadModel::Single);
 
   if (CodeGenOpts.DisableIntegratedAS)
     Options.DisableIntegratedAS = true;

@@ -37,9 +37,10 @@ CodeGenFunction::CodeGenFunction(CodeGenModule &cgm, bool suppressNewContext)
     : CodeGenTypeCache(cgm), CGM(cgm), Target(cgm.getTarget()),
       Builder(cgm.getModule().getContext(), llvm::ConstantFolder(),
               CGBuilderInserterTy(this)),
-      CapturedStmtInfo(nullptr), SanOpts(&CGM.getLangOpts().Sanitize),
-      IsSanitizerScope(false), CurFuncIsThunk(false), AutoreleaseResult(false),
-      SawAsmBlock(false), BlockInfo(nullptr), BlockPointer(nullptr),
+      CurFn(nullptr), CapturedStmtInfo(nullptr),
+      SanOpts(&CGM.getLangOpts().Sanitize), IsSanitizerScope(false),
+      CurFuncIsThunk(false), AutoreleaseResult(false), SawAsmBlock(false),
+      BlockInfo(nullptr), BlockPointer(nullptr),
       LambdaThisCaptureField(nullptr), NormalCleanupDest(nullptr),
       NextCleanupDestIndex(1), FirstBlockInfo(nullptr), EHResumeBlock(nullptr),
       ExceptionSlot(nullptr), EHSelectorSlot(nullptr),
@@ -79,6 +80,17 @@ CodeGenFunction::~CodeGenFunction() {
   }
 }
 
+LValue CodeGenFunction::MakeNaturalAlignAddrLValue(llvm::Value *V, QualType T) {
+  CharUnits Alignment;
+  if (CGM.getCXXABI().isTypeInfoCalculable(T)) {
+    Alignment = getContext().getTypeAlignInChars(T);
+    unsigned MaxAlign = getContext().getLangOpts().MaxTypeAlign;
+    if (MaxAlign && Alignment.getQuantity() > MaxAlign &&
+        !getContext().isAlignmentRequired(T))
+      Alignment = CharUnits::fromQuantity(MaxAlign);
+  }
+  return LValue::MakeAddr(V, T, Alignment, getContext(), CGM.getTBAAInfo(T));
+}
 
 llvm::Type *CodeGenFunction::ConvertTypeForMem(QualType T) {
   return CGM.getTypes().ConvertTypeForMem(T);
@@ -554,6 +566,9 @@ void CodeGenFunction::StartFunction(GlobalDecl GD,
                                     const FunctionArgList &Args,
                                     SourceLocation Loc,
                                     SourceLocation StartLoc) {
+  assert(!CurFn &&
+         "Do not use a CodeGenFunction object for more than one function");
+
   const Decl *D = GD.getDecl();
 
   DidCallStackSave = false;
@@ -564,7 +579,7 @@ void CodeGenFunction::StartFunction(GlobalDecl GD,
   CurFnInfo = &FnInfo;
   assert(CurFn->isDeclaration() && "Function already has body?");
 
-  if (CGM.getSanitizerBlacklist().isIn(*Fn))
+  if (CGM.isInSanitizerBlacklist(Fn, Loc))
     SanOpts = &SanitizerOptions::Disabled;
 
   // Pass inline keyword to optimizer if it appears explicitly on any
