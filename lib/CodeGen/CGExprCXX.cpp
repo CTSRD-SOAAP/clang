@@ -84,29 +84,35 @@ static CXXRecordDecl *getCXXRecord(const Expr *E) {
 
 __attribute__((noinline))
 void CodeGenFunction::addSoaapVTableMetadata(llvm::CallInst* C, CXXRecordDecl* RD, std::string desc) {
-  // Getting the vtable global var will also force the vtable definition to be
-  // generated even if the vtable is never used
-  llvm::GlobalVariable* vtableVar = CGM.getCXXABI().getAddrOfVTable(RD, CharUnits());
-  std::string mangledVTableName = vtableVar->getName();
-  //llvm::dbgs() << "VTable for " << RD->getName() << ": " << vtableVar->getName() << "\n";
-  std::size_t anonNsFound = mangledVTableName.find("_GLOBAL__N_1");
-
-  std::stringstream ss;
-  llvm::MDNode* Node;
-  if (anonNsFound != std::string::npos) {
-    // vtable var will be defined in this Module, as anonymous classes cannot
-    // be resolved outside of this compilation unit
-    Node = llvm::MDNode::get(getLLVMContext(), vtableVar);
+  MangleContext& mc = CGM.getCXXABI().getMangleContext();
+  if (mc.getKind() == MangleContext::MK_Itanium) {
+    ItaniumMangleContext& mangler = cast<ItaniumMangleContext>(mc);
+    //llvm::dbgs() << "RD: " << RD->getName() << "\n";
+    //llvm::dbgs() << "Desc: " << desc << "\n";
+    
+    SmallString<64> MangledName;
+    llvm::raw_svector_ostream Out(MangledName);
+    mangler.mangleCXXVTable(RD, Out);
+    std::string mangledVTableName = Out.str();
+    //llvm::dbgs() << "Mangled: " << mangledVTableName << "\n";
+    
+    llvm::Value* vtableVal;
+    std::size_t anonNsFound = mangledVTableName.find("_GLOBAL__N_1");
+    if (anonNsFound != std::string::npos) {
+      // vtable var will be defined in this Module, as anonymous classes cannot
+      // be resolved outside of this compilation unit
+      vtableVal = CGM.getCXXABI().getAddrOfVTable(RD, CharUnits());
+    }
+    else {
+      // do not add terminating NULL, otherwise we won't be able to find the
+      // vtable global var later
+      vtableVal = llvm::ConstantDataArray::getString(getLLVMContext(), mangledVTableName, false); 
+    }
+    std::stringstream ss;
     ss << "soaap_" << desc << "_vtable_var";
+    llvm::MDNode* Node = llvm::MDNode::get(getLLVMContext(), vtableVal);
+    C->setMetadata(ss.str(), Node);
   }
-  else {
-    // do not add terminating NULL, otherwise we won't be able to find the
-    // vtable global var later
-    llvm::Constant* vtableNameConstant = llvm::ConstantDataArray::getString(getLLVMContext(), mangledVTableName, false); 
-    Node = llvm::MDNode::get(getLLVMContext(), vtableNameConstant);
-    ss << "soaap_" << desc << "_vtable_name";
-  }
-  C->setMetadata(ss.str(), Node);
 }
 
 // Note: This function also emit constructor calls to support a MSVC
@@ -265,9 +271,8 @@ RValue CodeGenFunction::EmitCXXMemberCallExpr(const CXXMemberCallExpr *CE,
   RValue rval = EmitCXXMemberOrOperatorCall(MD, Callee, ReturnValue, This,
                            /*ImplicitParam=*/nullptr, QualType(), CE);
 
-  // Add SOAAP-related vtable metadata
-  if (CGM.getCodeGenOpts().SoaapVTableDbg && MD->isVirtual()) {
-    
+  // Add SOAAP-related vtable metadata for virtual calls
+  if (CGM.getCodeGenOpts().SoaapVTableDbg && UseVirtualCall) {
     llvm::BasicBlock::iterator I = Builder.GetInsertPoint();
 
     // find the CallInst that corresponds to this virtual call
@@ -285,7 +290,6 @@ RValue CodeGenFunction::EmitCXXMemberCallExpr(const CXXMemberCallExpr *CE,
     if (C) {
       CXXRecordDecl* DRD = (CXXRecordDecl*)MD->getParent();
       addSoaapVTableMetadata(C, DRD, "defining");
-
       bool staticTypeFound = false;
       Expr* Receiver = CE->getImplicitObjectArgument()->IgnoreParenImpCasts();
       const Type* ReceiverType = Receiver->getType().getTypePtr();
