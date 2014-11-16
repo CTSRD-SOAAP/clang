@@ -96,20 +96,21 @@ void CodeGenFunction::addSoaapVTableMetadata(llvm::CallInst* C, CXXRecordDecl* R
     std::string mangledVTableName = Out.str();
     //llvm::dbgs() << "Mangled: " << mangledVTableName << "\n";
     
+    std::stringstream ss;
     llvm::Value* vtableVal;
     std::size_t anonNsFound = mangledVTableName.find("_GLOBAL__N_1");
     if (anonNsFound != std::string::npos) {
       // vtable var will be defined in this Module, as anonymous classes cannot
       // be resolved outside of this compilation unit
       vtableVal = CGM.getCXXABI().getAddrOfVTable(RD, CharUnits());
+      ss << "soaap_" << desc << "_vtable_var";
     }
     else {
       // do not add terminating NULL, otherwise we won't be able to find the
       // vtable global var later
       vtableVal = llvm::ConstantDataArray::getString(getLLVMContext(), mangledVTableName, false); 
+      ss << "soaap_" << desc << "_vtable_name";
     }
-    std::stringstream ss;
-    ss << "soaap_" << desc << "_vtable_var";
     llvm::MDNode* Node = llvm::MDNode::get(getLLVMContext(), vtableVal);
     C->setMetadata(ss.str(), Node);
   }
