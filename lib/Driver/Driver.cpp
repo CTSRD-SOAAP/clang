@@ -884,7 +884,7 @@ void Driver::BuildUniversalActions(const ToolChain &TC,
       }
 
       A->claim();
-      if (ArchNames.insert(A->getValue()))
+      if (ArchNames.insert(A->getValue()).second)
         Archs.push_back(A->getValue());
     }
   }
@@ -1165,11 +1165,8 @@ void Driver::BuildActions(const ToolChain &TC, DerivedArgList &Args,
   // Diagnose misuse of /Fo.
   if (Arg *A = Args.getLastArg(options::OPT__SLASH_Fo)) {
     StringRef V = A->getValue();
-    if (V.empty()) {
-      // It has to have a value.
-      Diag(clang::diag::err_drv_missing_argument) << A->getSpelling() << 1;
-      Args.eraseArg(options::OPT__SLASH_Fo);
-    } else if (Inputs.size() > 1 && !llvm::sys::path::is_separator(V.back())) {
+    if (Inputs.size() > 1 && !V.empty() &&
+        !llvm::sys::path::is_separator(V.back())) {
       // Check whether /Fo tries to name an output file for multiple inputs.
       Diag(clang::diag::err_drv_out_file_argument_with_multiple_sources)
         << A->getSpelling() << V;
@@ -1180,20 +1177,12 @@ void Driver::BuildActions(const ToolChain &TC, DerivedArgList &Args,
   // Diagnose misuse of /Fa.
   if (Arg *A = Args.getLastArg(options::OPT__SLASH_Fa)) {
     StringRef V = A->getValue();
-    if (Inputs.size() > 1 && !llvm::sys::path::is_separator(V.back())) {
+    if (Inputs.size() > 1 && !V.empty() &&
+        !llvm::sys::path::is_separator(V.back())) {
       // Check whether /Fa tries to name an asm file for multiple inputs.
       Diag(clang::diag::err_drv_out_file_argument_with_multiple_sources)
         << A->getSpelling() << V;
       Args.eraseArg(options::OPT__SLASH_Fa);
-    }
-  }
-
-  // Diagnose misuse of /Fe.
-  if (Arg *A = Args.getLastArg(options::OPT__SLASH_Fe)) {
-    if (A->getValue()[0] == '\0') {
-      // It has to have a value.
-      Diag(clang::diag::err_drv_missing_argument) << A->getSpelling() << 1;
-      Args.eraseArg(options::OPT__SLASH_Fe);
     }
   }
 
@@ -1839,21 +1828,36 @@ std::string Driver::GetFilePath(const char *Name, const ToolChain &TC) const {
   return Name;
 }
 
+void
+Driver::generatePrefixedToolNames(const char *Tool, const ToolChain &TC,
+                                  SmallVectorImpl<std::string> &Names) const {
+  // FIXME: Needs a better variable than DefaultTargetTriple
+  Names.push_back(DefaultTargetTriple + "-" + Tool);
+  Names.push_back(Tool);
+}
+
+static bool ScanDirForExecutable(SmallString<128> &Dir,
+                                 ArrayRef<std::string> Names) {
+  for (const auto &Name : Names) {
+    llvm::sys::path::append(Dir, Name);
+    if (llvm::sys::fs::can_execute(Twine(Dir)))
+      return true;
+    llvm::sys::path::remove_filename(Dir);
+  }
+  return false;
+}
+
 std::string Driver::GetProgramPath(const char *Name,
                                    const ToolChain &TC) const {
-  // FIXME: Needs a better variable than DefaultTargetTriple
-  std::string TargetSpecificExecutable(DefaultTargetTriple + "-" + Name);
+  SmallVector<std::string, 2> TargetSpecificExecutables;
+  generatePrefixedToolNames(Name, TC, TargetSpecificExecutables);
+
   // Respect a limited subset of the '-Bprefix' functionality in GCC by
   // attempting to use this prefix when looking for program paths.
   for (const auto &PrefixDir : PrefixDirs) {
     if (llvm::sys::fs::is_directory(PrefixDir)) {
       SmallString<128> P(PrefixDir);
-      llvm::sys::path::append(P, TargetSpecificExecutable);
-      if (llvm::sys::fs::can_execute(Twine(P)))
-        return P.str();
-      llvm::sys::path::remove_filename(P);
-      llvm::sys::path::append(P, Name);
-      if (llvm::sys::fs::can_execute(Twine(P)))
+      if (ScanDirForExecutable(P, TargetSpecificExecutables))
         return P.str();
     } else {
       SmallString<128> P(PrefixDir + Name);
@@ -1865,23 +1869,15 @@ std::string Driver::GetProgramPath(const char *Name,
   const ToolChain::path_list &List = TC.getProgramPaths();
   for (const auto &Path : List) {
     SmallString<128> P(Path);
-    llvm::sys::path::append(P, TargetSpecificExecutable);
-    if (llvm::sys::fs::can_execute(Twine(P)))
-      return P.str();
-    llvm::sys::path::remove_filename(P);
-    llvm::sys::path::append(P, Name);
-    if (llvm::sys::fs::can_execute(Twine(P)))
+    if (ScanDirForExecutable(P, TargetSpecificExecutables))
       return P.str();
   }
 
   // If all else failed, search the path.
-  std::string P(llvm::sys::FindProgramByName(TargetSpecificExecutable));
-  if (!P.empty())
-    return P;
-
-  P = llvm::sys::FindProgramByName(Name);
-  if (!P.empty())
-    return P;
+  for (const auto &TargetSpecificExecutable : TargetSpecificExecutables)
+    if (llvm::ErrorOr<std::string> P =
+            llvm::sys::findProgramByName(TargetSpecificExecutable))
+      return *P;
 
   return Name;
 }
@@ -2038,6 +2034,9 @@ const ToolChain &Driver::getToolChain(const ArgList &Args,
           TC = new toolchains::Generic_ELF(*this, Target, Args);
         else
           TC = new toolchains::Generic_GCC(*this, Target, Args);
+        break;
+      case llvm::Triple::Itanium:
+        TC = new toolchains::CrossWindowsToolChain(*this, Target, Args);
         break;
       case llvm::Triple::MSVC:
       case llvm::Triple::UnknownEnvironment:

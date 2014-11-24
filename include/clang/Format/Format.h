@@ -15,8 +15,9 @@
 #ifndef LLVM_CLANG_FORMAT_FORMAT_H
 #define LLVM_CLANG_FORMAT_FORMAT_H
 
-#include "clang/Frontend/FrontendAction.h"
-#include "clang/Tooling/Refactoring.h"
+#include "clang/Basic/LangOptions.h"
+#include "clang/Tooling/Core/Replacement.h"
+#include "llvm/ADT/ArrayRef.h"
 #include <system_error>
 
 namespace clang {
@@ -227,6 +228,16 @@ struct FormatStyle {
   /// <tt>Foo <Protocol></tt> instead of \c Foo<Protocol>.
   bool ObjCSpaceBeforeProtocolList;
 
+  /// \brief If \c true, horizontally aligns arguments after an open bracket.
+  ///
+  /// This applies to round brackets (parentheses), angle brackets and square
+  /// brackets. This will result in formattings like
+  /// \code
+  /// someLongFunction(argument1,
+  ///                  argument2);
+  /// \endcode
+  bool AlignAfterOpenBracket;
+
   /// \brief If \c true, aligns trailing comments.
   bool AlignTrailingComments;
 
@@ -243,6 +254,9 @@ struct FormatStyle {
   /// \brief The number of characters to use for indentation of constructor
   /// initializer lists.
   unsigned ConstructorInitializerIndentWidth;
+
+  /// \brief The number of characters to use for indentation of ObjC blocks.
+  unsigned ObjCBlockIndentWidth;
 
   /// \brief If \c true, always break after function definition return types.
   ///
@@ -390,8 +404,7 @@ struct FormatStyle {
 
   bool operator==(const FormatStyle &R) const {
     return AccessModifierOffset == R.AccessModifierOffset &&
-           ConstructorInitializerIndentWidth ==
-               R.ConstructorInitializerIndentWidth &&
+           AlignAfterOpenBracket == R.AlignAfterOpenBracket &&
            AlignEscapedNewlinesLeft == R.AlignEscapedNewlinesLeft &&
            AlignTrailingComments == R.AlignTrailingComments &&
            AllowAllParametersOfDeclarationOnNextLine ==
@@ -418,6 +431,8 @@ struct FormatStyle {
            ColumnLimit == R.ColumnLimit &&
            ConstructorInitializerAllOnOneLineOrOnePerLine ==
                R.ConstructorInitializerAllOnOneLineOrOnePerLine &&
+           ConstructorInitializerIndentWidth ==
+               R.ConstructorInitializerIndentWidth &&
            DerivePointerAlignment == R.DerivePointerAlignment &&
            ExperimentalAutoDetectBinPacking ==
                R.ExperimentalAutoDetectBinPacking &&
@@ -428,6 +443,7 @@ struct FormatStyle {
            KeepEmptyLinesAtTheStartOfBlocks ==
                R.KeepEmptyLinesAtTheStartOfBlocks &&
            NamespaceIndentation == R.NamespaceIndentation &&
+           ObjCBlockIndentWidth == R.ObjCBlockIndentWidth &&
            ObjCSpaceAfterProperty == R.ObjCSpaceAfterProperty &&
            ObjCSpaceBeforeProtocolList == R.ObjCSpaceBeforeProtocolList &&
            PenaltyBreakComment == R.PenaltyBreakComment &&

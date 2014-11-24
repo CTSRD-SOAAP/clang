@@ -83,6 +83,23 @@ static void CheckCodeGenerationOptions(const Driver &D, const ArgList &Args) {
         << A->getAsString(Args) << "-static";
 }
 
+// Add backslashes to escape spaces and other backslashes.
+// This is used for the space-separated argument list specified with
+// the -dwarf-debug-flags option.
+static void EscapeSpacesAndBackslashes(const char *Arg,
+                                       SmallVectorImpl<char> &Res) {
+  for ( ; *Arg; ++Arg) {
+    switch (*Arg) {
+    default: break;
+    case ' ':
+    case '\\':
+      Res.push_back('\\');
+      break;
+    }
+    Res.push_back(*Arg);
+  }
+}
+
 // Quote target names for inclusion in GNU Make dependency files.
 // Only the characters '$', '#', ' ', '\t' are quoted.
 static void QuoteTarget(StringRef Target,
@@ -459,6 +476,8 @@ static bool isSignedCharDefault(const llvm::Triple &Triple) {
   case llvm::Triple::aarch64_be:
   case llvm::Triple::arm:
   case llvm::Triple::armeb:
+  case llvm::Triple::thumb:
+  case llvm::Triple::thumbeb:
     if (Triple.isOSDarwin() || Triple.isOSWindows())
       return true;
     return false;
@@ -1775,6 +1794,9 @@ static void getAArch64TargetFeatures(const Driver &D, const ArgList &Args,
     success = getAArch64ArchFeaturesFromMarch(D, A->getValue(), Args, Features);
   else if ((A = Args.getLastArg(options::OPT_mcpu_EQ)))
     success = getAArch64ArchFeaturesFromMcpu(D, A->getValue(), Args, Features);
+  else if (Args.hasArg(options::OPT_arch))
+    success = getAArch64ArchFeaturesFromMcpu(D, getAArch64TargetCPU(Args), Args,
+                                             Features);
 
   if (success && (A = Args.getLastArg(options::OPT_mtune_EQ)))
     success =
@@ -1782,6 +1804,9 @@ static void getAArch64TargetFeatures(const Driver &D, const ArgList &Args,
   else if (success && (A = Args.getLastArg(options::OPT_mcpu_EQ)))
     success =
         getAArch64MicroArchFeaturesFromMcpu(D, A->getValue(), Args, Features);
+  else if (Args.hasArg(options::OPT_arch))
+    success = getAArch64MicroArchFeaturesFromMcpu(D, getAArch64TargetCPU(Args),
+                                                  Args, Features);
 
   if (!success)
     D.Diag(diag::err_drv_clang_unsupported) << A->getAsString(Args);
@@ -2138,6 +2163,14 @@ static void addClangRTLinux(
     CmdArgs.push_back("-lgcc_eh");
 }
 
+static void addClangRTWindows(const ToolChain &TC, const ArgList &Args,
+                              ArgStringList &CmdArgs) {
+  SmallString<128> LibClangRT = getCompilerRTLibDir(TC);
+  llvm::sys::path::append(LibClangRT, Twine("libclang_rt.builtins-") +
+                          getArchNameForCompilerRTLib(TC) + ".lib");
+  CmdArgs.push_back(Args.MakeArgString(LibClangRT));
+}
+
 static void addProfileRT(
     const ToolChain &TC, const ArgList &Args, ArgStringList &CmdArgs) {
   if (!(Args.hasFlag(options::OPT_fprofile_arcs, options::OPT_fno_profile_arcs,
@@ -2148,16 +2181,10 @@ static void addProfileRT(
         Args.hasArg(options::OPT_coverage)))
     return;
 
-  // -fprofile-instr-generate requires position-independent code to build with
-  // shared objects.  Link against the right archive.
-  const char *Lib = "libclang_rt.profile-";
-  if (Args.hasArg(options::OPT_fprofile_instr_generate) &&
-      Args.hasArg(options::OPT_shared))
-    Lib = "libclang_rt.profile-pic-";
-
   SmallString<128> LibProfile = getCompilerRTLibDir(TC);
-  llvm::sys::path::append(LibProfile,
-      Twine(Lib) + getArchNameForCompilerRTLib(TC) + ".a");
+  llvm::sys::path::append(LibProfile, Twine("libclang_rt.profile-") +
+                                          getArchNameForCompilerRTLib(TC) +
+                                          ".a");
 
   CmdArgs.push_back(Args.MakeArgString(LibProfile));
 }
@@ -2267,10 +2294,6 @@ collectSanitizerRuntimes(const ToolChain &TC, const ArgList &Args,
 // C runtime, etc). Returns true if sanitizer system deps need to be linked in.
 static bool addSanitizerRuntimes(const ToolChain &TC, const ArgList &Args,
                                  ArgStringList &CmdArgs) {
-  // Don't link in any sanitizer runtimes if we have no system libraries.
-  if (Args.hasArg(options::OPT_nostdlib) ||
-      Args.hasArg(options::OPT_nodefaultlibs))
-    return false;
   SmallVector<StringRef, 4> SharedRuntimes, StaticRuntimes,
       HelperStaticRuntimes;
   collectSanitizerRuntimes(TC, Args, SharedRuntimes, StaticRuntimes,
@@ -3606,15 +3629,6 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   const SanitizerArgs &Sanitize = getToolChain().getSanitizerArgs();
   Sanitize.addArgs(Args, CmdArgs);
 
-  if (!Args.hasFlag(options::OPT_fsanitize_recover,
-                    options::OPT_fno_sanitize_recover,
-                    true))
-    CmdArgs.push_back("-fno-sanitize-recover");
-
-  if (Args.hasFlag(options::OPT_fsanitize_undefined_trap_on_error,
-                   options::OPT_fno_sanitize_undefined_trap_on_error, false))
-    CmdArgs.push_back("-fsanitize-undefined-trap-on-error");
-
   // Report an error for -faltivec on anything other than PowerPC.
   if (const Arg *A = Args.getLastArg(options::OPT_faltivec))
     if (!(getToolChain().getArch() == llvm::Triple::ppc ||
@@ -4121,8 +4135,6 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
 
   if (getToolChain().UseSjLjExceptions())
     CmdArgs.push_back("-fsjlj-exceptions");
-  else if (getToolChain().UseSEHExceptions())
-    CmdArgs.push_back("-fseh-exceptions");
 
   // C++ "sane" operator new.
   if (!Args.hasFlag(options::OPT_fassume_sane_operator_new,
@@ -4463,8 +4475,10 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     SmallString<256> Flags;
     Flags += Exec;
     for (unsigned i = 0, e = OriginalArgs.size(); i != e; ++i) {
+      SmallString<128> EscapedArg;
+      EscapeSpacesAndBackslashes(OriginalArgs[i], EscapedArg);
       Flags += " ";
-      Flags += OriginalArgs[i];
+      Flags += EscapedArg;
     }
     CmdArgs.push_back("-dwarf-debug-flags");
     CmdArgs.push_back(Args.MakeArgString(Flags.str()));
@@ -4894,8 +4908,10 @@ void ClangAs::ConstructJob(Compilation &C, const JobAction &JA,
     const char *Exec = getToolChain().getDriver().getClangProgramPath();
     Flags += Exec;
     for (unsigned i = 0, e = OriginalArgs.size(); i != e; ++i) {
+      SmallString<128> EscapedArg;
+      EscapeSpacesAndBackslashes(OriginalArgs[i], EscapedArg);
       Flags += " ";
-      Flags += OriginalArgs[i];
+      Flags += EscapedArg;
     }
     CmdArgs.push_back("-dwarf-debug-flags");
     CmdArgs.push_back(Args.MakeArgString(Flags.str()));
@@ -5226,8 +5242,8 @@ void hexagon::Link::ConstructJob(Compilation &C, const JobAction &JA,
   const std::string MarchSuffix = "/" + MarchString;
   const std::string G0Suffix = "/G0";
   const std::string MarchG0Suffix = MarchSuffix + G0Suffix;
-  const std::string RootDir = toolchains::Hexagon_TC::GetGnuDir(D.InstalledDir)
-                              + "/";
+  const std::string RootDir =
+      toolchains::Hexagon_TC::GetGnuDir(D.InstalledDir, Args) + "/";
   const std::string StartFilesDir = RootDir
                                     + "hexagon/lib"
                                     + (buildingLib
@@ -5381,7 +5397,7 @@ const char *arm::getLLVMArchSuffixForARM(StringRef CPU) {
     .Cases("arm1136j-s",  "arm1136jf-s",  "arm1176jz-s", "v6")
     .Cases("arm1176jzf-s",  "mpcorenovfp",  "mpcore", "v6")
     .Cases("arm1156t2-s",  "arm1156t2f-s", "v6t2")
-    .Cases("cortex-a5", "cortex-a7", "cortex-a8", "cortex-a9-mp", "v7")
+    .Cases("cortex-a5", "cortex-a7", "cortex-a8", "v7")
     .Cases("cortex-a9", "cortex-a12", "cortex-a15", "cortex-a17", "krait", "v7")
     .Cases("cortex-r4", "cortex-r5", "v7r")
     .Case("cortex-m0", "v6m")
@@ -7296,7 +7312,15 @@ static void AddRunTimeLibs(const ToolChain &TC, const Driver &D,
 
   switch(RLT) {
   case ToolChain::RLT_CompilerRT:
-    addClangRTLinux(TC, Args, CmdArgs);
+    switch (TC.getTriple().getOS()) {
+    default: llvm_unreachable("unsupported OS");
+    case llvm::Triple::Win32:
+      addClangRTWindows(TC, Args, CmdArgs);
+      break;
+    case llvm::Triple::Linux:
+      addClangRTLinux(TC, Args, CmdArgs);
+      break;
+    }
     break;
   case ToolChain::RLT_Libgcc:
     AddLibgcc(TC.getTriple(), D, CmdArgs, Args);
@@ -7818,6 +7842,26 @@ static void addSanitizerRTWindows(const ToolChain &TC, const ArgList &Args,
   CmdArgs.push_back(Args.MakeArgString(LibSanitizer));
 }
 
+// Try to find Exe from a Visual Studio distribution.  This first tries to find
+// an installed copy of Visual Studio and, failing that, looks in the PATH,
+// making sure that whatever executable that's found is not a same-named exe
+// from clang itself to prevent clang from falling back to itself.
+static std::string FindVisualStudioExecutable(const ToolChain &TC,
+                                              const char *Exe,
+                                              const char *ClangProgramPath) {
+  const auto &MSVC = static_cast<const toolchains::MSVCToolChain &>(TC);
+  std::string visualStudioBinDir;
+  if (MSVC.getVisualStudioBinariesFolder(ClangProgramPath,
+                                         visualStudioBinDir)) {
+    SmallString<128> FilePath(visualStudioBinDir);
+    llvm::sys::path::append(FilePath, Exe);
+    if (llvm::sys::fs::can_execute(FilePath.c_str()))
+      return FilePath.str();
+  }
+
+  return Exe;
+}
+
 void visualstudio::Link::ConstructJob(Compilation &C, const JobAction &JA,
                                       const InputInfo &Output,
                                       const InputInfoList &Inputs,
@@ -7836,6 +7880,39 @@ void visualstudio::Link::ConstructJob(Compilation &C, const JobAction &JA,
       !Args.hasArg(options::OPT_nostartfiles) &&
       !C.getDriver().IsCLMode()) {
     CmdArgs.push_back("-defaultlib:libcmt");
+  }
+
+  if (!llvm::sys::Process::GetEnv("LIB")) {
+    // If the VC environment hasn't been configured (perhaps because the user
+    // did not run vcvarsall), try to build a consistent link environment.  If
+    // the environment variable is set however, assume the user knows what he's
+    // doing.
+    std::string VisualStudioDir;
+    const auto &MSVC = static_cast<const toolchains::MSVCToolChain &>(getToolChain());
+    if (MSVC.getVisualStudioInstallDir(VisualStudioDir)) {
+      SmallString<128> LibDir(VisualStudioDir);
+      llvm::sys::path::append(LibDir, "VC", "lib");
+      switch (MSVC.getArch()) {
+      case llvm::Triple::x86:
+        // x86 just puts the libraries directly in lib
+        break;
+      case llvm::Triple::x86_64:
+        llvm::sys::path::append(LibDir, "amd64");
+        break;
+      case llvm::Triple::arm:
+        llvm::sys::path::append(LibDir, "arm");
+        break;
+      default:
+        break;
+      }
+      CmdArgs.push_back(
+          Args.MakeArgString(std::string("-libpath:") + LibDir.c_str()));
+    }
+
+    std::string WindowsSdkLibPath;
+    if (MSVC.getWindowsSDKLibraryPath(WindowsSdkLibPath))
+      CmdArgs.push_back(Args.MakeArgString(std::string("-libpath:") +
+                                           WindowsSdkLibPath.c_str()));
   }
 
   CmdArgs.push_back("-nologo");
@@ -7903,8 +7980,11 @@ void visualstudio::Link::ConstructJob(Compilation &C, const JobAction &JA,
     A.renderAsInput(Args, CmdArgs);
   }
 
-  const char *Exec =
-    Args.MakeArgString(getToolChain().GetProgramPath("link.exe"));
+  // It's not sufficient to just use link from the program PATH, because other
+  // environments like GnuWin32 install their own link.exe which may come first.
+  llvm::SmallString<128> linkPath(FindVisualStudioExecutable(
+      getToolChain(), "link.exe", C.getDriver().getClangProgramPath()));
+  const char *Exec = Args.MakeArgString(linkPath);
   C.addCommand(llvm::make_unique<Command>(JA, *this, Exec, CmdArgs));
 }
 
@@ -7914,35 +7994,6 @@ void visualstudio::Compile::ConstructJob(Compilation &C, const JobAction &JA,
                                          const ArgList &Args,
                                          const char *LinkingOutput) const {
   C.addCommand(GetCommand(C, JA, Output, Inputs, Args, LinkingOutput));
-}
-
-// Try to find FallbackName on PATH that is not identical to ClangProgramPath.
-// If one cannot be found, return FallbackName.
-// We do this special search to prevent clang-cl from falling back onto itself
-// if it's available as cl.exe on the path.
-static std::string FindFallback(const char *FallbackName,
-                                const char *ClangProgramPath) {
-  llvm::Optional<std::string> OptPath = llvm::sys::Process::GetEnv("PATH");
-  if (!OptPath.hasValue())
-    return FallbackName;
-
-  const char EnvPathSeparatorStr[] = {llvm::sys::EnvPathSeparator, '\0'};
-  SmallVector<StringRef, 8> PathSegments;
-  llvm::SplitString(OptPath.getValue(), PathSegments, EnvPathSeparatorStr);
-
-  for (size_t i = 0, e = PathSegments.size(); i != e; ++i) {
-    StringRef PathSegment = PathSegments[i];
-    if (PathSegment.empty())
-      continue;
-
-    SmallString<128> FilePath(PathSegment);
-    llvm::sys::path::append(FilePath, FallbackName);
-    if (llvm::sys::fs::can_execute(Twine(FilePath)) &&
-        !llvm::sys::fs::equivalent(Twine(FilePath), ClangProgramPath))
-      return FilePath.str();
-  }
-
-  return FallbackName;
 }
 
 std::unique_ptr<Command> visualstudio::Compile::GetCommand(
@@ -8026,7 +8077,8 @@ std::unique_ptr<Command> visualstudio::Compile::GetCommand(
   CmdArgs.push_back(Fo);
 
   const Driver &D = getToolChain().getDriver();
-  std::string Exec = FindFallback("cl.exe", D.getClangProgramPath());
+  std::string Exec = FindVisualStudioExecutable(getToolChain(), "cl.exe",
+                                                D.getClangProgramPath());
   return llvm::make_unique<Command>(JA, *this, Args.MakeArgString(Exec),
                                     CmdArgs);
 }
@@ -8094,3 +8146,181 @@ void XCore::Link::ConstructJob(Compilation &C, const JobAction &JA,
   const char *Exec = Args.MakeArgString(getToolChain().GetProgramPath("xcc"));
   C.addCommand(llvm::make_unique<Command>(JA, *this, Exec, CmdArgs));
 }
+
+void CrossWindows::Assemble::ConstructJob(Compilation &C, const JobAction &JA,
+                                          const InputInfo &Output,
+                                          const InputInfoList &Inputs,
+                                          const ArgList &Args,
+                                          const char *LinkingOutput) const {
+  const auto &TC =
+      static_cast<const toolchains::CrossWindowsToolChain &>(getToolChain());
+  ArgStringList CmdArgs;
+  const char *Exec;
+
+  switch (TC.getArch()) {
+  default: llvm_unreachable("unsupported architecture");
+  case llvm::Triple::arm:
+  case llvm::Triple::thumb:
+    break;
+  case llvm::Triple::x86:
+    CmdArgs.push_back("--32");
+    break;
+  case llvm::Triple::x86_64:
+    CmdArgs.push_back("--64");
+    break;
+  }
+
+  Args.AddAllArgValues(CmdArgs, options::OPT_Wa_COMMA, options::OPT_Xassembler);
+
+  CmdArgs.push_back("-o");
+  CmdArgs.push_back(Output.getFilename());
+
+  for (const auto &Input : Inputs)
+    CmdArgs.push_back(Input.getFilename());
+
+  const std::string Assembler = TC.GetProgramPath("as");
+  Exec = Args.MakeArgString(Assembler);
+
+  C.addCommand(llvm::make_unique<Command>(JA, *this, Exec, CmdArgs));
+}
+
+void CrossWindows::Link::ConstructJob(Compilation &C, const JobAction &JA,
+                                      const InputInfo &Output,
+                                      const InputInfoList &Inputs,
+                                      const ArgList &Args,
+                                      const char *LinkingOutput) const {
+  const auto &TC =
+      static_cast<const toolchains::CrossWindowsToolChain &>(getToolChain());
+  const llvm::Triple &T = TC.getTriple();
+  const Driver &D = TC.getDriver();
+  SmallString<128> EntryPoint;
+  ArgStringList CmdArgs;
+  const char *Exec;
+
+  // Silence warning for "clang -g foo.o -o foo"
+  Args.ClaimAllArgs(options::OPT_g_Group);
+  // and "clang -emit-llvm foo.o -o foo"
+  Args.ClaimAllArgs(options::OPT_emit_llvm);
+  // and for "clang -w foo.o -o foo"
+  Args.ClaimAllArgs(options::OPT_w);
+  // Other warning options are already handled somewhere else.
+
+  if (!D.SysRoot.empty())
+    CmdArgs.push_back(Args.MakeArgString("--sysroot=" + D.SysRoot));
+
+  if (Args.hasArg(options::OPT_pie))
+    CmdArgs.push_back("-pie");
+  if (Args.hasArg(options::OPT_rdynamic))
+    CmdArgs.push_back("-export-dynamic");
+  if (Args.hasArg(options::OPT_s))
+    CmdArgs.push_back("--strip-all");
+
+  CmdArgs.push_back("-m");
+  switch (TC.getArch()) {
+  default: llvm_unreachable("unsupported architecture");
+  case llvm::Triple::arm:
+  case llvm::Triple::thumb:
+    // FIXME: this is incorrect for WinCE
+    CmdArgs.push_back("thumb2pe");
+    break;
+  case llvm::Triple::x86:
+    CmdArgs.push_back("i386pe");
+    EntryPoint.append("_");
+    break;
+  case llvm::Triple::x86_64:
+    CmdArgs.push_back("i386pep");
+    break;
+  }
+
+  if (Args.hasArg(options::OPT_shared)) {
+    switch (T.getArch()) {
+    default: llvm_unreachable("unsupported architecture");
+    case llvm::Triple::arm:
+    case llvm::Triple::thumb:
+    case llvm::Triple::x86_64:
+      EntryPoint.append("_DllMainCRTStartup");
+      break;
+    case llvm::Triple::x86:
+      EntryPoint.append("_DllMainCRTStartup@12");
+      break;
+    }
+
+    CmdArgs.push_back("-shared");
+    CmdArgs.push_back("-Bdynamic");
+
+    CmdArgs.push_back("--enable-auto-image-base");
+
+    CmdArgs.push_back("--entry");
+    CmdArgs.push_back(Args.MakeArgString(EntryPoint));
+  } else {
+    EntryPoint.append("mainCRTStartup");
+
+    CmdArgs.push_back(Args.hasArg(options::OPT_static) ? "-Bstatic"
+                                                       : "-Bdynamic");
+
+    if (!Args.hasArg(options::OPT_nostdlib) &&
+        !Args.hasArg(options::OPT_nostartfiles)) {
+      CmdArgs.push_back("--entry");
+      CmdArgs.push_back(Args.MakeArgString(EntryPoint));
+    }
+
+    // FIXME: handle subsystem
+  }
+
+  // NOTE: deal with multiple definitions on Windows (e.g. COMDAT)
+  CmdArgs.push_back("--allow-multiple-definition");
+
+  CmdArgs.push_back("-o");
+  CmdArgs.push_back(Output.getFilename());
+
+  if (Args.hasArg(options::OPT_shared) || Args.hasArg(options::OPT_rdynamic)) {
+    SmallString<261> ImpLib(Output.getFilename());
+    llvm::sys::path::replace_extension(ImpLib, ".lib");
+
+    CmdArgs.push_back("--out-implib");
+    CmdArgs.push_back(Args.MakeArgString(ImpLib));
+  }
+
+  if (!Args.hasArg(options::OPT_nostdlib) &&
+      !Args.hasArg(options::OPT_nostartfiles)) {
+    const std::string CRTPath(D.SysRoot + "/usr/lib/");
+    const char *CRTBegin;
+
+    CRTBegin =
+        Args.hasArg(options::OPT_shared) ? "crtbeginS.obj" : "crtbegin.obj";
+    CmdArgs.push_back(Args.MakeArgString(CRTPath + CRTBegin));
+  }
+
+  Args.AddAllArgs(CmdArgs, options::OPT_L);
+
+  const auto &Paths = TC.getFilePaths();
+  for (const auto &Path : Paths)
+    CmdArgs.push_back(Args.MakeArgString(StringRef("-L") + Path));
+
+  AddLinkerInputs(TC, Inputs, Args, CmdArgs);
+
+  if (D.CCCIsCXX() && !Args.hasArg(options::OPT_nostdlib) &&
+      !Args.hasArg(options::OPT_nodefaultlibs)) {
+    bool StaticCXX = Args.hasArg(options::OPT_static_libstdcxx) &&
+                     !Args.hasArg(options::OPT_static);
+    if (StaticCXX)
+      CmdArgs.push_back("-Bstatic");
+    TC.AddCXXStdlibLibArgs(Args, CmdArgs);
+    if (StaticCXX)
+      CmdArgs.push_back("-Bdynamic");
+  }
+
+  if (!Args.hasArg(options::OPT_nostdlib)) {
+    if (!Args.hasArg(options::OPT_nodefaultlibs)) {
+      // TODO handle /MT[d] /MD[d]
+      CmdArgs.push_back("-lmsvcrt");
+      AddRunTimeLibs(TC, D, CmdArgs, Args);
+    }
+  }
+
+  const std::string Linker = TC.GetProgramPath("ld");
+  Exec = Args.MakeArgString(Linker);
+
+  C.addCommand(llvm::make_unique<Command>(JA, *this, Exec, CmdArgs));
+}
+
