@@ -2321,7 +2321,8 @@ public:
   EmitCXXMemberOrOperatorCall(const CXXMethodDecl *MD, llvm::Value *Callee,
                               ReturnValueSlot ReturnValue, llvm::Value *This,
                               llvm::Value *ImplicitParam,
-                              QualType ImplicitParamTy, const CallExpr *E);
+                              QualType ImplicitParamTy, const CallExpr *E,
+                              llvm::Instruction **callOrInvoke = nullptr);
   RValue EmitCXXStructorCall(const CXXMethodDecl *MD, llvm::Value *Callee,
                              ReturnValueSlot ReturnValue, llvm::Value *This,
                              llvm::Value *ImplicitParam,

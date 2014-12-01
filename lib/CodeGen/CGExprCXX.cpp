@@ -74,14 +74,14 @@ static RequiredArgs commonEmitCXXMemberOrOperatorCall(
 RValue CodeGenFunction::EmitCXXMemberOrOperatorCall(
     const CXXMethodDecl *MD, llvm::Value *Callee, ReturnValueSlot ReturnValue,
     llvm::Value *This, llvm::Value *ImplicitParam, QualType ImplicitParamTy,
-    const CallExpr *CE) {
+    const CallExpr *CE, llvm::Instruction **callOrInvoke) {
   const FunctionProtoType *FPT = MD->getType()->castAs<FunctionProtoType>();
   CallArgList Args;
   RequiredArgs required = commonEmitCXXMemberOrOperatorCall(
       *this, MD, Callee, ReturnValue, This, ImplicitParam, ImplicitParamTy, CE,
       Args);
   return EmitCall(CGM.getTypes().arrangeCXXMethodCall(Args, FPT, required),
-                  Callee, ReturnValue, Args, MD);
+                  Callee, ReturnValue, Args, MD, callOrInvoke);
 }
 
 RValue CodeGenFunction::EmitCXXStructorCall(
@@ -290,25 +290,14 @@ RValue CodeGenFunction::EmitCXXMemberCallExpr(const CXXMemberCallExpr *CE,
         *this, MD, This, UseVirtualCall);
   }
 
+  llvm::CallInst* C = NULL;
   RValue rval = EmitCXXMemberOrOperatorCall(MD, Callee, ReturnValue, This,
-                           /*ImplicitParam=*/nullptr, QualType(), CE);
+                           /*ImplicitParam=*/nullptr, QualType(), CE,
+                           (llvm::Instruction**)&C);
 
   // Add SOAAP-related vtable metadata for virtual calls
   if (CGM.getCodeGenOpts().SoaapVTableDbg && UseVirtualCall) {
-    llvm::BasicBlock::iterator I = Builder.GetInsertPoint();
-
-    // find the CallInst that corresponds to this virtual call
-    // Due to the recursive way in which IR instructions are generated from ASTs,
-    // we search backwards from the current insertion point.
-    llvm::CallInst* C = NULL;
-    while (true) {
-      I--;
-      //llvm::dbgs() << "Checking " << *I << "\n";
-      if ((C = dyn_cast<llvm::CallInst>(&*I))) {
-        //llvm::dbgs() << "Found\n";
-        break;
-      }
-    }
+    
     if (C) {
       CXXRecordDecl* DRD = (CXXRecordDecl*)MD->getParent();
       addSoaapVTableMetadata(C, DRD, "defining");
