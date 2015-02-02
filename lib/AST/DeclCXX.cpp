@@ -1693,12 +1693,12 @@ const Type *CXXCtorInitializer::getBaseClass() const {
 }
 
 SourceLocation CXXCtorInitializer::getSourceLocation() const {
-  if (isAnyMemberInitializer())
-    return getMemberLocation();
-
   if (isInClassMemberInitializer())
     return getAnyMember()->getLocation();
   
+  if (isAnyMemberInitializer())
+    return getMemberLocation();
+
   if (TypeSourceInfo *TSInfo = Initializee.get<TypeSourceInfo*>())
     return TSInfo->getTypeLoc().getLocalSourceRange().getBegin();
   
@@ -1831,7 +1831,6 @@ bool CXXConstructorDecl::isConvertingConstructor(bool AllowExplicit) const {
 bool CXXConstructorDecl::isSpecializationCopyingObject() const {
   if ((getNumParams() < 1) ||
       (getNumParams() > 1 && !getParamDecl(1)->hasDefaultArg()) ||
-      (getPrimaryTemplate() == nullptr) ||
       (getDescribedFunctionTemplate() != nullptr))
     return false;
 

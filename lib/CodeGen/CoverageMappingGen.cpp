@@ -15,10 +15,10 @@
 #include "CodeGenFunction.h"
 #include "clang/AST/StmtVisitor.h"
 #include "clang/Lex/Lexer.h"
-#include "llvm/ProfileData/InstrProfReader.h"
 #include "llvm/ProfileData/CoverageMapping.h"
-#include "llvm/ProfileData/CoverageMappingWriter.h"
 #include "llvm/ProfileData/CoverageMappingReader.h"
+#include "llvm/ProfileData/CoverageMappingWriter.h"
+#include "llvm/ProfileData/InstrProfReader.h"
 #include "llvm/Support/FileSystem.h"
 
 using namespace clang;
@@ -117,19 +117,6 @@ public:
   }
 };
 
-/// \brief The state of the coverage mapping builder.
-struct SourceMappingState {
-  Counter CurrentRegionCount;
-  const Stmt *CurrentSourceGroup;
-  const Stmt *CurrentUnreachableRegionInitiator;
-
-  SourceMappingState(Counter CurrentRegionCount, const Stmt *CurrentSourceGroup,
-                     const Stmt *CurrentUnreachableRegionInitiator)
-      : CurrentRegionCount(CurrentRegionCount),
-        CurrentSourceGroup(CurrentSourceGroup),
-        CurrentUnreachableRegionInitiator(CurrentUnreachableRegionInitiator) {}
-};
-
 /// \brief Provides the common functionality for the different
 /// coverage mapping region builders.
 class CoverageMappingBuilder {
@@ -186,40 +173,36 @@ public:
   /// \brief Get the coverage mapping file id that corresponds to the given
   /// clang file id. If such file id doesn't exist, it gets added to the
   /// mapping that maps from clang's file ids to coverage mapping file ids.
-  /// Return true if there was an error getting the coverage mapping file id.
+  /// Returns None if there was an error getting the coverage mapping file id.
   /// An example of an when this function fails is when the region tries
   /// to get a coverage file id for a location in a built-in macro.
-  bool getCoverageFileID(SourceLocation LocStart, FileID File,
-                         FileID SpellingFile, unsigned &Result) {
+  Optional<unsigned> getCoverageFileID(SourceLocation LocStart, FileID File,
+                                       FileID SpellingFile) {
     auto Mapping = FileIDMapping.find(File);
-    if (Mapping != FileIDMapping.end()) {
-      Result = Mapping->second.CovMappingFileID;
-      return false;
-    }
+    if (Mapping != FileIDMapping.end())
+      return Mapping->second.CovMappingFileID;
 
     auto Entry = SM.getFileEntryForID(SpellingFile);
     if (!Entry)
-      return true;
+      return None;
 
-    Result = FileIDMapping.size();
+    unsigned Result = FileIDMapping.size();
     FileIDMapping.insert(std::make_pair(File, FileInfo(Result, Entry)));
     createFileExpansionRegion(LocStart, File);
-    return false;
+    return Result;
   }
 
   /// \brief Get the coverage mapping file id that corresponds to the given
   /// clang file id.
-  /// Return true if there was an error getting the coverage mapping file id.
-  bool getExistingCoverageFileID(FileID File, unsigned &Result) {
+  /// Returns None if there was an error getting the coverage mapping file id.
+  Optional<unsigned> getExistingCoverageFileID(FileID File) {
     // Make sure that the file is valid.
     if (File.isInvalid())
-      return true;
+      return None;
     auto Mapping = FileIDMapping.find(File);
-    if (Mapping != FileIDMapping.end()) {
-      Result = Mapping->second.CovMappingFileID;
-      return false;
-    }
-    return true;
+    if (Mapping == FileIDMapping.end())
+      return None;
+    return Mapping->second.CovMappingFileID;
   }
 
   /// \brief Return true if the given clang's file id has a corresponding
@@ -256,20 +239,20 @@ public:
         // Ignore regions that span across multiple files.
         continue;
 
-      unsigned CovFileID;
-      if (getCoverageFileID(LocStart, FileStart, ActualFileStart, CovFileID))
+      auto CovFileID = getCoverageFileID(LocStart, FileStart, ActualFileStart);
+      if (!CovFileID)
         continue;
       unsigned LineStart = SM.getSpellingLineNumber(LocStart);
       unsigned ColumnStart = SM.getSpellingColumnNumber(LocStart);
       unsigned LineEnd = SM.getSpellingLineNumber(LocEnd);
       unsigned ColumnEnd = SM.getSpellingColumnNumber(LocEnd);
-      CounterMappingRegion Region(Counter(), CovFileID, LineStart, ColumnStart,
+      CounterMappingRegion Region(Counter(), *CovFileID, LineStart, ColumnStart,
                                   LineEnd, ColumnEnd, false,
                                   CounterMappingRegion::SkippedRegion);
       // Make sure that we only collect the regions that are inside
       // the souce code of this function.
-      if (Region.LineStart >= FileLineRanges[CovFileID].first &&
-          Region.LineEnd <= FileLineRanges[CovFileID].second)
+      if (Region.LineStart >= FileLineRanges[*CovFileID].first &&
+          Region.LineEnd <= FileLineRanges[*CovFileID].second)
         MappingRegions.push_back(Region);
     }
   }
@@ -288,10 +271,9 @@ public:
 
     auto File = SM.getFileID(LocStart);
     auto SpellingFile = SM.getDecomposedSpellingLoc(LocStart).first;
-    unsigned CovFileID, ExpandedFileID;
-    if (getExistingCoverageFileID(ExpandedFile, ExpandedFileID))
-      return;
-    if (getCoverageFileID(LocStart, File, SpellingFile, CovFileID))
+    auto CovFileID = getCoverageFileID(LocStart, File, SpellingFile);
+    auto ExpandedFileID = getExistingCoverageFileID(ExpandedFile);
+    if (!CovFileID || !ExpandedFileID)
       return;
     unsigned LineStart = SM.getSpellingLineNumber(LocStart);
     unsigned ColumnStart = SM.getSpellingColumnNumber(LocStart);
@@ -303,9 +285,9 @@ public:
         Lexer::MeasureTokenLength(SM.getSpellingLoc(LocStart), SM, LangOpts);
 
     MappingRegions.push_back(CounterMappingRegion(
-        Counter(), CovFileID, LineStart, ColumnStart, LineEnd, ColumnEnd,
+        Counter(), *CovFileID, LineStart, ColumnStart, LineEnd, ColumnEnd,
         false, CounterMappingRegion::ExpansionRegion));
-    MappingRegions.back().ExpandedFileID = ExpandedFileID;
+    MappingRegions.back().ExpandedFileID = *ExpandedFileID;
   }
 
   /// \brief Enter a source region group that is identified by the given
@@ -358,14 +340,6 @@ public:
                        Flags);
   }
 
-  void mapSourceCodeRange(const SourceMappingState &State,
-                          SourceLocation LocStart, SourceLocation LocEnd,
-                          unsigned Flags = 0) {
-    mapSourceCodeRange(LocStart, LocEnd, State.CurrentRegionCount,
-                       State.CurrentUnreachableRegionInitiator,
-                       State.CurrentSourceGroup, Flags);
-  }
-
   /// \brief Generate the coverage counter mapping regions from collected
   /// source regions.
   void emitSourceRegions() {
@@ -396,13 +370,13 @@ public:
       unsigned ColumnEnd = SM.getSpellingColumnNumber(LocEnd);
 
       auto SpellingFile = SM.getDecomposedSpellingLoc(LocStart).first;
-      unsigned CovFileID;
-      if (getCoverageFileID(LocStart, I->getFile(), SpellingFile, CovFileID))
+      auto CovFileID = getCoverageFileID(LocStart, I->getFile(), SpellingFile);
+      if (!CovFileID)
         continue;
 
       assert(LineStart <= LineEnd);
       MappingRegions.push_back(CounterMappingRegion(
-          I->getCounter(), CovFileID, LineStart, ColumnStart, LineEnd,
+          I->getCounter(), *CovFileID, LineStart, ColumnStart, LineEnd,
           ColumnEnd, false, CounterMappingRegion::CodeRegion));
     }
   }
@@ -597,12 +571,6 @@ struct CounterCoverageMappingBuilder
     Writer.write(OS);
   }
 
-  /// \brief Return the current source mapping state.
-  SourceMappingState getCurrentState() const {
-    return SourceMappingState(CurrentRegionCount, CurrentSourceGroup,
-                              CurrentUnreachableRegionInitiator);
-  }
-
   /// \brief Associate the source code range with the current region count.
   void mapSourceCodeRange(SourceLocation LocStart, SourceLocation LocEnd,
                           unsigned Flags = 0) {
@@ -623,11 +591,6 @@ struct CounterCoverageMappingBuilder
     CoverageMappingBuilder::mapSourceCodeRange(
         LocStart, LocStart, CurrentRegionCount,
         SourceMappingRegion::IgnoreIfNotExtended);
-  }
-
-  void mapToken(const SourceMappingState &State, SourceLocation LocStart) {
-    CoverageMappingBuilder::mapSourceCodeRange(
-        State, LocStart, LocStart, SourceMappingRegion::IgnoreIfNotExtended);
   }
 
   void VisitStmt(const Stmt *S) {
@@ -658,14 +621,12 @@ struct CounterCoverageMappingBuilder
   }
 
   void VisitCompoundStmt(const CompoundStmt *S) {
-    SourceMappingState State = getCurrentState();
     mapSourceCodeRange(S->getLBracLoc());
+    mapSourceCodeRange(S->getRBracLoc());
     for (Stmt::const_child_range I = S->children(); I; ++I) {
       if (*I)
         this->Visit(*I);
     }
-    CoverageMappingBuilder::mapSourceCodeRange(State, S->getRBracLoc(),
-                                               S->getRBracLoc());
   }
 
   void VisitReturnStmt(const ReturnStmt *S) {
@@ -917,7 +878,7 @@ struct CounterCoverageMappingBuilder
   void VisitAbstractConditionalOperator(const AbstractConditionalOperator *E) {
     Visit(E->getCond());
     mapToken(E->getQuestionLoc());
-    auto State = getCurrentState();
+    mapToken(E->getColonLoc());
 
     // Counter tracks the "true" part of a conditional operator. The
     // count in the "false" part will be calculated from this counter.
@@ -925,8 +886,6 @@ struct CounterCoverageMappingBuilder
     Cnt.beginRegion();
     Visit(E->getTrueExpr());
     Cnt.adjustForControlFlow();
-
-    mapToken(State, E->getColonLoc());
 
     Cnt.beginElseRegion();
     Visit(E->getFalseExpr());
@@ -1064,7 +1023,7 @@ static void dump(llvm::raw_ostream &OS, const CoverageMappingRecord &Function) {
     OS << "File " << R.FileID << ", " << R.LineStart << ":"
            << R.ColumnStart << " -> " << R.LineEnd << ":" << R.ColumnEnd
            << " = ";
-    Ctx.dump(R.Count);
+    Ctx.dump(R.Count, OS);
     OS << " (HasCodeBefore = " << R.HasCodeBefore;
     if (R.Kind == CounterMappingRegion::ExpansionRegion)
       OS << ", Expanded file = " << R.ExpandedFileID;

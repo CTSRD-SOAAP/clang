@@ -275,15 +275,28 @@ struct FormatToken {
   bool is(const IdentifierInfo *II) const {
     return II && II == Tok.getIdentifierInfo();
   }
-
-  bool isOneOf() const { return false; }
-  template <typename T, typename... L> bool isOneOf(T Type, L... args) const {
-    return is(Type) || isOneOf(args...);
-  }
-  // This overload increases performance by ~3%.
-  // FIXME: Re-evaluate this.
-  template <typename T> bool isOneOf(T K1, T K2) const {
+  template <typename A, typename B> bool isOneOf(A K1, B K2) const {
     return is(K1) || is(K2);
+  }
+  template <typename A, typename B, typename C>
+  bool isOneOf(A K1, B K2, C K3) const {
+    return is(K1) || is(K2) || is(K3);
+  }
+  template <typename A, typename B, typename C, typename D>
+  bool isOneOf(A K1, B K2, C K3, D K4) const {
+    return is(K1) || is(K2) || is(K3) || is(K4);
+  }
+  template <typename A, typename B, typename C, typename D, typename E>
+  bool isOneOf(A K1, B K2, C K3, D K4, E K5) const {
+    return is(K1) || is(K2) || is(K3) || is(K4) || is(K5);
+  }
+  template <typename T>
+  bool isOneOf(T K1, T K2, T K3, T K4, T K5, T K6, T K7 = tok::NUM_TOKENS,
+               T K8 = tok::NUM_TOKENS, T K9 = tok::NUM_TOKENS,
+               T K10 = tok::NUM_TOKENS, T K11 = tok::NUM_TOKENS,
+               T K12 = tok::NUM_TOKENS) const {
+    return is(K1) || is(K2) || is(K3) || is(K4) || is(K5) || is(K6) || is(K7) ||
+           is(K8) || is(K9) || is(K10) || is(K11) || is(K12);
   }
 
   template <typename T> bool isNot(T Kind) const { return !is(Kind); }
@@ -396,8 +409,9 @@ struct FormatToken {
   /// list that should be indented with a block indent.
   bool opensBlockTypeList(const FormatStyle &Style) const {
     return is(TT_ArrayInitializerLSquare) ||
-           (is(tok::l_brace) && (BlockKind == BK_Block || is(TT_DictLiteral) ||
-                                 !Style.Cpp11BracedListStyle));
+           (is(tok::l_brace) &&
+            (BlockKind == BK_Block || is(TT_DictLiteral) ||
+             (!Style.Cpp11BracedListStyle && NestingLevel == 0)));
   }
 
   /// \brief Same as opensBlockTypeList, but for the closing token.
@@ -522,7 +536,10 @@ private:
 struct AdditionalKeywords {
   AdditionalKeywords(IdentifierTable &IdentTable) {
     kw_in = &IdentTable.get("in");
+    kw_CF_ENUM = &IdentTable.get("CF_ENUM");
+    kw_CF_OPTIONS = &IdentTable.get("CF_OPTIONS");
     kw_NS_ENUM = &IdentTable.get("NS_ENUM");
+    kw_NS_OPTIONS = &IdentTable.get("NS_OPTIONS");
 
     kw_finally = &IdentTable.get("finally");
     kw_function = &IdentTable.get("function");
@@ -534,6 +551,8 @@ struct AdditionalKeywords {
     kw_implements = &IdentTable.get("implements");
     kw_instanceof = &IdentTable.get("instanceof");
     kw_interface = &IdentTable.get("interface");
+    kw_native = &IdentTable.get("native");
+    kw_package = &IdentTable.get("package");
     kw_synchronized = &IdentTable.get("synchronized");
     kw_throws = &IdentTable.get("throws");
 
@@ -546,7 +565,10 @@ struct AdditionalKeywords {
 
   // ObjC context sensitive keywords.
   IdentifierInfo *kw_in;
+  IdentifierInfo *kw_CF_ENUM;
+  IdentifierInfo *kw_CF_OPTIONS;
   IdentifierInfo *kw_NS_ENUM;
+  IdentifierInfo *kw_NS_OPTIONS;
 
   // JavaScript keywords.
   IdentifierInfo *kw_finally;
@@ -560,6 +582,8 @@ struct AdditionalKeywords {
   IdentifierInfo *kw_implements;
   IdentifierInfo *kw_instanceof;
   IdentifierInfo *kw_interface;
+  IdentifierInfo *kw_native;
+  IdentifierInfo *kw_package;
   IdentifierInfo *kw_synchronized;
   IdentifierInfo *kw_throws;
 

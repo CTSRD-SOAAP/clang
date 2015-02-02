@@ -44,6 +44,7 @@
 #include "clang/AST/Type.h"
 #include "llvm/ADT/Optional.h"
 #include "llvm/ADT/VariadicFunction.h"
+#include "llvm/Support/ManagedStatic.h"
 #include <map>
 #include <string>
 #include <vector>
@@ -218,10 +219,7 @@ public:
   bool dynMatches(const ast_type_traits::DynTypedNode &DynNode,
                   ASTMatchFinder *Finder,
                   BoundNodesTreeBuilder *Builder) const override {
-    if (const T *Node = DynNode.get<T>()) {
-      return matches(*Node, Finder, Builder);
-    }
-    return false;
+    return matches(DynNode.getUnchecked<T>(), Finder, Builder);
   }
 };
 
@@ -289,6 +287,11 @@ public:
 
   void setAllowBind(bool AB) { AllowBind = AB; }
 
+  /// \brief Check whether this matcher could ever match a node of kind \p Kind.
+  /// \return \c false if this matcher will never match such a node. Otherwise,
+  /// return \c true.
+  bool canMatchNodesOfKind(ast_type_traits::ASTNodeKind Kind) const;
+
   /// \brief Return a matcher that points to the same implementation, but
   ///   restricts the node types for \p Kind.
   DynTypedMatcher dynCastTo(const ast_type_traits::ASTNodeKind Kind) const;
@@ -296,6 +299,14 @@ public:
   /// \brief Returns true if the matcher matches the given \c DynNode.
   bool matches(const ast_type_traits::DynTypedNode &DynNode,
                ASTMatchFinder *Finder, BoundNodesTreeBuilder *Builder) const;
+
+  /// \brief Same as matches(), but skips the kind check.
+  ///
+  /// It is faster, but the caller must ensure the node is valid for the
+  /// kind of this matcher.
+  bool matchesNoKindCheck(const ast_type_traits::DynTypedNode &DynNode,
+                          ASTMatchFinder *Finder,
+                          BoundNodesTreeBuilder *Builder) const;
 
   /// \brief Bind the specified \p ID to the matcher.
   /// \return A new matcher with the \p ID bound to it if this matcher supports
@@ -1608,6 +1619,23 @@ public:
 
 private:
   const Matcher<InnerTBase> InnerMatcher;
+};
+
+/// \brief A simple memoizer of T(*)() functions.
+///
+/// It will call the passed 'Func' template parameter at most once.
+/// Used to support AST_MATCHER_FUNCTION() macro.
+template <typename Matcher, Matcher (*Func)()> class MemoizedMatcher {
+  struct Wrapper {
+    Wrapper() : M(Func()) {}
+    Matcher M;
+  };
+
+public:
+  static const Matcher &getInstance() {
+    static llvm::ManagedStatic<Wrapper> Instance;
+    return Instance->M;
+  }
 };
 
 // Define the create() method out of line to silence a GCC warning about

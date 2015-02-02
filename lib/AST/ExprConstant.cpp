@@ -1422,6 +1422,17 @@ static bool IsWeakLValue(const LValue &Value) {
   return Decl && Decl->isWeak();
 }
 
+static bool isZeroSized(const LValue &Value) {
+  const ValueDecl *Decl = GetLValueBaseDecl(Value);
+  if (Decl && isa<VarDecl>(Decl)) {
+    QualType Ty = Decl->getType();
+    if (Ty->isArrayType())
+      return Ty->isIncompleteType() ||
+             Decl->getASTContext().getTypeSize(Ty) == 0;
+  }
+  return false;
+}
+
 static bool EvalPointerValueAsBool(const APValue &Value, bool &Result) {
   // A null base expression indicates a null pointer.  These are always
   // evaluatable, and they are false unless the offset is zero.
@@ -4829,6 +4840,7 @@ bool PointerExprEvaluator::VisitCastExpr(const CastExpr* E) {
   case CK_CPointerToObjCPointerCast:
   case CK_BlockPointerToObjCPointerCast:
   case CK_AnyPointerToBlockPointerCast:
+  case CK_AddressSpaceConversion:
     if (!Visit(SubExpr))
       return false;
     // Bitcasts to cv void* are static_casts, not reinterpret_casts, so are
@@ -5460,6 +5472,9 @@ public:
     return VisitConstructExpr(E);
   }
   bool VisitCallExpr(const CallExpr *E) {
+    return VisitConstructExpr(E);
+  }
+  bool VisitCXXStdInitializerListExpr(const CXXStdInitializerListExpr *E) {
     return VisitConstructExpr(E);
   }
 };
@@ -6977,6 +6992,11 @@ bool IntExprEvaluator::VisitBinaryOperator(const BinaryOperator *E) {
              isOnePastTheEndOfCompleteObject(Info.Ctx, RHSValue)) ||
             (RHSValue.Base && RHSValue.Offset.isZero() &&
              isOnePastTheEndOfCompleteObject(Info.Ctx, LHSValue)))
+          return Error(E);
+        // We can't tell whether an object is at the same address as another
+        // zero sized object.
+        if ((RHSValue.Base && isZeroSized(LHSValue)) ||
+            (LHSValue.Base && isZeroSized(RHSValue)))
           return Error(E);
         // Pointers with different bases cannot represent the same object.
         // (Note that clang defaults to -fmerge-all-constants, which can
@@ -9071,7 +9091,8 @@ bool Expr::EvaluateWithSubstitution(APValue &Value, ASTContext &Ctx,
   ArgVector ArgValues(Args.size());
   for (ArrayRef<const Expr*>::iterator I = Args.begin(), E = Args.end();
        I != E; ++I) {
-    if (!Evaluate(ArgValues[I - Args.begin()], Info, *I))
+    if ((*I)->isValueDependent() ||
+        !Evaluate(ArgValues[I - Args.begin()], Info, *I))
       // If evaluation fails, throw away the argument entirely.
       ArgValues[I - Args.begin()] = APValue();
     if (Info.EvalStatus.HasSideEffects)

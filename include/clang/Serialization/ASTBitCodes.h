@@ -35,7 +35,7 @@ namespace clang {
     /// Version 4 of AST files also requires that the version control branch and
     /// revision match exactly, since there is no backward compatibility of
     /// AST files at this time.
-    const unsigned VERSION_MAJOR = 5;
+    const unsigned VERSION_MAJOR = 6;
 
     /// \brief AST file minor version number supported by this version of
     /// Clang.
@@ -291,7 +291,10 @@ namespace clang {
       MODULE_MAP_FILE = 14,
 
       /// \brief Record code for the signature that identifiers this AST file.
-      SIGNATURE = 15
+      SIGNATURE = 15,
+
+      /// \brief Record code for the module build directory.
+      MODULE_DIRECTORY = 16,
     };
 
     /// \brief Record types that occur within the input-files block

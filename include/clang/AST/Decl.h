@@ -906,6 +906,11 @@ public:
     return false;
   }
 
+  /// \brief Similar to isLocalVarDecl but also includes parameters.
+  bool isLocalVarDeclOrParm() const {
+    return isLocalVarDecl() || getKind() == Decl::ParmVar;
+  }
+
   /// isFunctionOrMethodVarDecl - Similar to isLocalVarDecl, but
   /// excludes variables declared in blocks.
   bool isFunctionOrMethodVarDecl() const {
@@ -3273,6 +3278,10 @@ public:
   /// These padding are added to help AddressSanitizer detect
   /// intra-object-overflow bugs.
   bool mayInsertExtraPadding(bool EmitRemark = false) const;
+
+  /// Finds the first data member which has a name.
+  /// nullptr is returned if no named data member exists.
+  const FieldDecl *findFirstNamedDataMember() const;  
 
 private:
   /// \brief Deserialize just the fields.

@@ -466,14 +466,21 @@ StmtResult Parser::ParseSEHExceptBlock(SourceLocation ExceptLoc) {
   if (ExpectAndConsume(tok::l_paren))
     return StmtError();
 
-  ParseScope ExpectScope(this, Scope::DeclScope | Scope::ControlScope);
+  ParseScope ExpectScope(this, Scope::DeclScope | Scope::ControlScope |
+                                   Scope::SEHExceptScope);
 
   if (getLangOpts().Borland) {
     Ident__exception_info->setIsPoisoned(false);
     Ident___exception_info->setIsPoisoned(false);
     Ident_GetExceptionInfo->setIsPoisoned(false);
   }
-  ExprResult FilterExpr(ParseExpression());
+
+  ExprResult FilterExpr;
+  {
+    ParseScopeFlags FilterScope(this, getCurScope()->getFlags() |
+                                          Scope::SEHFilterScope);
+    FilterExpr = ParseExpression();
+  }
 
   if (getLangOpts().Borland) {
     Ident__exception_info->setIsPoisoned(true);
@@ -1520,9 +1527,7 @@ StmtResult Parser::ParseForStatement(SourceLocation *TrailingElseLoc) {
     else
       ForRangeInit.RangeExpr = ParseExpression();
 
-    Diag(Loc, getLangOpts().CPlusPlus1z
-                  ? diag::warn_cxx14_compat_for_range_identifier
-                  : diag::ext_for_range_identifier)
+    Diag(Loc, diag::err_for_range_identifier)
       << ((getLangOpts().CPlusPlus11 && !getLangOpts().CPlusPlus1z)
               ? FixItHint::CreateInsertion(Loc, "auto &&")
               : FixItHint());
@@ -1803,7 +1808,7 @@ StmtResult Parser::ParseReturnStatement() {
              diag::ext_generalized_initializer_lists)
           << R.get()->getSourceRange();
     } else
-        R = ParseExpression();
+      R = ParseExpression();
     if (R.isInvalid()) {
       SkipUntil(tok::r_brace, StopAtSemi | StopBeforeMatch);
       return StmtError();
@@ -1961,7 +1966,6 @@ StmtResult Parser::ParseCXXTryBlock() {
 StmtResult Parser::ParseCXXTryBlockCommon(SourceLocation TryLoc, bool FnTry) {
   if (Tok.isNot(tok::l_brace))
     return StmtError(Diag(Tok, diag::err_expected) << tok::l_brace);
-  // FIXME: Possible draft standard bug: attribute-specifier should be allowed?
 
   StmtResult TryBlock(ParseCompoundStatement(/*isStmtExpr=*/false,
                       Scope::DeclScope | Scope::TryScope |

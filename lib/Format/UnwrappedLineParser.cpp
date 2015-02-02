@@ -549,6 +549,7 @@ void UnwrappedLineParser::conditionalCompilationEnd() {
 void UnwrappedLineParser::parsePPIf(bool IfDef) {
   nextToken();
   bool IsLiteralFalse = (FormatTok->Tok.isLiteral() &&
+                         FormatTok->Tok.getLiteralData() != nullptr &&
                          StringRef(FormatTok->Tok.getLiteralData(),
                                    FormatTok->Tok.getLength()) == "0") ||
                         FormatTok->Tok.is(tok::kw_false);
@@ -660,15 +661,15 @@ void UnwrappedLineParser::parseStructuralElement() {
     }
     break;
   case tok::kw_asm:
-    FormatTok->Finalized = true;
     nextToken();
     if (FormatTok->is(tok::l_brace)) {
+      nextToken();
       while (FormatTok && FormatTok->isNot(tok::eof)) {
-        FormatTok->Finalized = true;
         if (FormatTok->is(tok::r_brace)) {
           nextToken();
           break;
         }
+        FormatTok->Finalized = true;
         nextToken();
       }
     }
@@ -747,7 +748,8 @@ void UnwrappedLineParser::parseStructuralElement() {
       break;
     case tok::kw_typedef:
       nextToken();
-      if (FormatTok->is(Keywords.kw_NS_ENUM))
+      if (FormatTok->isOneOf(Keywords.kw_NS_ENUM, Keywords.kw_NS_OPTIONS,
+                             Keywords.kw_CF_ENUM, Keywords.kw_CF_OPTIONS))
         parseEnum();
       break;
     case tok::kw_struct:
@@ -756,6 +758,13 @@ void UnwrappedLineParser::parseStructuralElement() {
       parseRecord();
       // A record declaration or definition is always the start of a structural
       // element.
+      break;
+    case tok::period:
+      nextToken();
+      // In Java, classes have an implicit static member "class".
+      if (Style.Language == FormatStyle::LK_Java && FormatTok &&
+          FormatTok->is(tok::kw_class))
+        nextToken();
       break;
     case tok::semi:
       nextToken();
@@ -872,6 +881,7 @@ bool UnwrappedLineParser::tryToParseLambda() {
     case tok::amp:
     case tok::star:
     case tok::kw_const:
+    case tok::comma:
     case tok::less:
     case tok::greater:
     case tok::identifier:
@@ -1024,6 +1034,8 @@ void UnwrappedLineParser::parseParens() {
     switch (FormatTok->Tok.getKind()) {
     case tok::l_paren:
       parseParens();
+      if (Style.Language == FormatStyle::LK_Java && FormatTok->is(tok::l_brace))
+        parseChildBlock();
       break;
     case tok::r_paren:
       nextToken();
@@ -1034,12 +1046,11 @@ void UnwrappedLineParser::parseParens() {
     case tok::l_square:
       tryToParseLambda();
       break;
-    case tok::l_brace: {
+    case tok::l_brace:
       if (!tryToParseBracedList()) {
         parseChildBlock();
       }
       break;
-    }
     case tok::at:
       nextToken();
       if (FormatTok->Tok.is(tok::l_brace))
@@ -1154,6 +1165,10 @@ void UnwrappedLineParser::parseTryCatch() {
         nextToken();
     }
   }
+  // Parse try with resource.
+  if (Style.Language == FormatStyle::LK_Java && FormatTok->is(tok::l_paren)) {
+    parseParens();
+  }
   if (FormatTok->is(tok::l_brace)) {
     CompoundStatementIndenter Indenter(this, Style, Line->Level);
     parseBlock(/*MustBeDeclaration=*/false);
@@ -1184,7 +1199,7 @@ void UnwrappedLineParser::parseTryCatch() {
         parseParens();
         continue;
       }
-      if (FormatTok->isOneOf(tok::semi, tok::r_brace))
+      if (FormatTok->isOneOf(tok::semi, tok::r_brace, tok::eof))
         return;
       nextToken();
     }

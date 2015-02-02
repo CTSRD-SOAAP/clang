@@ -1,3 +1,4 @@
+
 //==--- DiagnosticSemaKinds.td - libsema diagnostics ----------------------===//
 //
 //                     The LLVM Compiler Infrastructure
@@ -64,6 +65,9 @@ def err_typecheck_converted_constant_expression : Error<
   "value of type %0 is not implicitly convertible to %1">;
 def err_typecheck_converted_constant_expression_disallowed : Error<
   "conversion from %0 to %1 is not allowed in a converted constant expression">;
+def err_typecheck_converted_constant_expression_indirect : Error<
+  "conversion from %0 to %1 in converted constant expression would "
+  "bind reference to a temporary">;
 def err_expr_not_cce : Error<
   "%select{case value|enumerator value|non-type template argument|array size}0 "
   "is not a constant expression">;
@@ -582,7 +586,8 @@ def warn_atprotocol_protocol : Warning<
   "@protocol is using a forward protocol declaration of %0">, InGroup<AtProtocol>;
 def warn_readonly_property : Warning<
   "attribute 'readonly' of property %0 restricts attribute "
-  "'readwrite' of property inherited from %1">;
+  "'readwrite' of property inherited from %1">,
+  InGroup<PropertyAttr>;
 
 def warn_property_attribute : Warning<
   "'%1' attribute on property %0 does not match the property inherited from %2">,
@@ -717,7 +722,8 @@ def warn_implements_nscopying : Warning<
 "default assign attribute on property %0 which implements "
 "NSCopying protocol is not appropriate with -fobjc-gc[-only]">;
 
-def warn_multiple_method_decl : Warning<"multiple methods named %0 found">;
+def warn_multiple_method_decl : Warning<"multiple methods named %0 found">,
+  InGroup<ObjCMultipleMethodNames>;
 def warn_strict_multiple_method_decl : Warning<
   "multiple methods named %0 found">, InGroup<StrictSelector>, DefaultIgnore;
 def warn_accessor_property_type_mismatch : Warning<
@@ -792,6 +798,12 @@ def warn_cocoa_naming_owned_rule : Warning<
   "property follows Cocoa naming"
   " convention for returning 'owned' objects">,
   InGroup<DiagGroup<"objc-property-matches-cocoa-ownership-rule">>;
+def err_cocoa_naming_owned_rule : Error<
+  "property follows Cocoa naming"
+  " convention for returning 'owned' objects">;
+def note_cocoa_naming_declare_family : Note<
+  "explicitly declare getter %objcinstance0 with '%1' to return an 'unowned' "
+  "object">;
 def warn_auto_synthesizing_protocol_property :Warning<
   "auto property synthesis will not synthesize property %0"
   " declared in protocol %1">,
@@ -823,9 +835,6 @@ def warn_property_getter_owning_mismatch : Warning<
 def error_property_setter_ambiguous_use : Error<
   "synthesized properties %0 and %1 both claim setter %2 -"
   " use of this setter will cause unexpected behavior">;
-def err_cocoa_naming_owned_rule : Error<
-  "property follows Cocoa naming"
-  " convention for returning 'owned' objects">;
 def warn_default_atomic_custom_getter_setter : Warning<
   "atomic by default property %0 has a user defined %select{getter|setter}1 "
   "(property should be marked 'atomic' if this is intended)">,
@@ -1222,7 +1231,10 @@ def warn_cxx98_compat_enum_nested_name_spec : Warning<
   InGroup<CXX98Compat>, DefaultIgnore;
 def err_nested_name_spec_is_not_class : Error<
   "%0 cannot appear before '::' because it is not a class"
-  "%select{ or namespace|, namespace, or scoped enumeration}1; did you mean ':'?">;
+  "%select{ or namespace|, namespace, or enumeration}1; did you mean ':'?">;
+def ext_nested_name_spec_is_enum : ExtWarn<
+  "use of enumeration in a nested name specifier is a C++11 extension">,
+  InGroup<CXX11>;
 
 // C++ class members
 def err_storageclass_invalid_for_member : Error<
@@ -1871,6 +1883,8 @@ def err_enable_if_never_constant_expr : Error<
   "'enable_if' attribute expression never produces a constant expression">;
 def err_constexpr_body_no_return : Error<
   "no return statement in constexpr function">;
+def err_constexpr_return_missing_expr : Error<
+  "non-void constexpr function %0 should return a value">;
 def warn_cxx11_compat_constexpr_body_no_return : Warning<
   "constexpr function with no return statements is incompatible with C++ "
   "standards before C++14">, InGroup<CXXPre14Compat>, DefaultIgnore;
@@ -1891,8 +1905,6 @@ def err_constexpr_ctor_missing_init : Error<
   "constexpr constructor must initialize all members">;
 def note_constexpr_ctor_missing_init : Note<
   "member not initialized by constructor">;
-def err_constexpr_method_non_literal : Error<
-  "non-literal type %0 cannot have constexpr members">;
 def note_non_literal_no_constexpr_ctors : Note<
   "%0 is not literal because it is not an aggregate and has no constexpr "
   "constructors other than copy or move constructors">;
@@ -2196,6 +2208,9 @@ def err_attribute_dllimport_static_field_definition : Error<
 def warn_attribute_dllimport_static_field_definition : Warning<
   "definition of dllimport static field">,
   InGroup<DiagGroup<"dllimport-static-field-def">>;
+def warn_attribute_dllexport_explicit_instantiation_decl : Warning<
+  "explicit instantiation declaration should not be 'dllexport'">,
+  InGroup<DiagGroup<"dllexport-explicit-instantation-decl">>;
 def warn_invalid_initializer_from_system_header : Warning<
   "invalid constructor form class in system header, should not be explicit">,
   InGroup<DiagGroup<"invalid-initializer-from-system-header">>;
@@ -2231,7 +2246,7 @@ def warn_attribute_wrong_decl_type : Warning<
   "%0 attribute only applies to %select{functions|unions|"
   "variables and functions|functions and methods|parameters|"
   "functions, methods and blocks|functions, methods, and classes|"
-  "functions, methods, and parameters|classes|variables|methods|"
+  "functions, methods, and parameters|classes|enums|variables|methods|"
   "variables, functions and labels|fields and global variables|structs|"
   "variables and typedefs|thread-local variables|"
   "variables and fields|variables, data members and tag types|"
@@ -2239,8 +2254,8 @@ def warn_attribute_wrong_decl_type : Warning<
   "struct or union|struct, union or class|types|"
   "Objective-C instance methods|init methods of interface or class extension declarations|"
   "variables, functions and classes|Objective-C protocols|"
-  "functions and global variables|structs or typedefs|"
-  "interface or protocol declarations}1">,
+  "functions and global variables|structs, unions, and typedefs|structs and typedefs|"
+  "interface or protocol declarations|kernel functions}1">,
   InGroup<IgnoredAttributes>;
 def err_attribute_wrong_decl_type : Error<warn_attribute_wrong_decl_type.Text>;
 def warn_type_attribute_wrong_type : Warning<
@@ -2602,6 +2617,7 @@ def warn_attribute_protected_visibility :
   InGroup<DiagGroup<"unsupported-visibility">>;
 def err_mismatched_visibility: Error<"visibility does not match previous declaration">;
 def note_previous_attribute : Note<"previous attribute is here">;
+def note_conflicting_attribute : Note<"conflicting attribute is here">;
 def note_attribute : Note<"attribute is here">;
 def err_mismatched_ms_inheritance : Error<
   "inheritance model does not match %select{definition|previous declaration}0">;
@@ -2718,6 +2734,10 @@ def warn_objc_implementation_missing_designated_init_override : Warning<
 // objc_bridge attribute diagnostics.
 def err_objc_attr_not_id : Error<
   "parameter of %0 attribute must be a single name of an Objective-C %select{class|protocol}1">;
+def err_objc_attr_typedef_not_id : Error<
+  "parameter of %0 attribute must be 'id' when used on a typedef">;
+def err_objc_attr_typedef_not_void_pointer : Error<
+  "'objc_bridge(id)' is only allowed on structs and typedefs of void pointers">;
 def err_objc_cf_bridged_not_interface : Error<
   "CF object of type %0 is bridged to %1, which is not an Objective-C class">;
 def err_objc_ns_bridged_invalid_cfobject : Error<
@@ -2841,6 +2861,9 @@ def note_ovl_candidate : Note<"candidate "
     "|volatile and restrict|const, volatile, and restrict}4)}2">;
 
 def note_ovl_candidate_inherited_constructor : Note<"inherited from here">;
+def note_ovl_candidate_illegal_constructor : Note<
+    "candidate %select{constructor|template}0 ignored: "
+    "instantiation %select{takes|would take}0 its own class type by value">;
 def note_ovl_candidate_bad_deduction : Note<
     "candidate template ignored: failed template argument deduction">;
 def note_ovl_candidate_incomplete_deduction : Note<"candidate template ignored: "
@@ -3293,6 +3316,10 @@ def err_template_arg_wrongtype_null_constant : Error<
 def err_deduced_non_type_template_arg_type_mismatch : Error<
   "deduced non-type template argument does not have the same type as the "
   "its corresponding template parameter%diff{ ($ vs $)|}0,1">;
+def err_non_type_template_arg_subobject : Error<
+  "non-type template argument refers to subobject '%0'">;
+def err_non_type_template_arg_addr_label_diff : Error<
+  "template argument / label address difference / what did you expect?">;
 def err_template_arg_not_convertible : Error<
   "non-type template argument of type %0 cannot be converted to a value "
   "of type %1">;
@@ -3344,6 +3371,9 @@ def err_template_arg_not_object_or_func : Error<
   "non-type template argument does not refer to an object or function">;
 def err_template_arg_not_pointer_to_member_form : Error<
   "non-type template argument is not a pointer to member constant">;
+def err_template_arg_member_ptr_base_derived_not_supported : Error<
+  "sorry, non-type template argument of pointer-to-member type %1 that refers "
+  "to member %q0 of a different class is not supported yet">;
 def ext_template_arg_extra_parens : ExtWarn<
   "address non-type template argument cannot be surrounded by parentheses">;
 def warn_cxx98_compat_template_arg_extra_parens : Warning<
@@ -3879,8 +3909,8 @@ def err_static_data_member_reinitialization :
 def err_redefinition : Error<"redefinition of %0">;
 def err_alias_after_tentative :
   Error<"alias definition of %0 after tentative definition">;
-def err_tentative_after_alias :
-  Error<"tentative definition of %0 after alias definition">;
+def err_alias_is_definition :
+  Error<"definition %0 cannot also be an alias">;
 def err_definition_of_implicitly_declared_member : Error<
   "definition of implicitly declared %select{default constructor|copy "
   "constructor|move constructor|copy assignment operator|move assignment "
@@ -4043,6 +4073,9 @@ def ext_enum_too_large : ExtWarn<
 def ext_enumerator_increment_too_large : ExtWarn<
   "incremented enumerator value %0 is not representable in the "
   "largest integer type">, InGroup<EnumTooLarge>;
+def warn_flag_enum_constant_out_of_range : Warning<
+  "enumeration value %0 is out of range of flags in enumeration type %1">,
+  InGroup<FlagEnum>;
   
 def warn_illegal_constant_array_size : Extension<
   "size of static array must be an integer constant expression">;
@@ -4301,6 +4334,9 @@ def note_exits_block_captures_strong : Note<
 def note_exits_block_captures_weak : Note<
   "jump exits lifetime of block which weakly captures a variable">;
 
+def err_func_returning_qualified_void : ExtWarn<
+  "function cannot return qualified void type %0">,
+  InGroup<DiagGroup<"qualified-void-return-type">>;
 def err_func_returning_array_function : Error<
   "function cannot return %select{array|function}0 type %1">;
 def err_field_declared_as_function : Error<"field %0 declared as a function">;
@@ -4682,6 +4718,9 @@ def warn_addition_in_bitshift : Warning<
 def warn_self_assignment : Warning<
   "explicitly assigning value of variable of type %0 to itself">,
   InGroup<SelfAssignment>, DefaultIgnore;
+def warn_self_move : Warning<
+  "explicitly moving variable of type %0 to itself">,
+  InGroup<SelfMove>, DefaultIgnore;
 
 def warn_string_plus_int : Warning<
   "adding %0 to a string does not append to the string">,
@@ -4960,9 +4999,11 @@ def err_typecheck_comparison_of_distinct_pointers : Error<
 def ext_typecheck_comparison_of_distinct_pointers_nonstandard : ExtWarn<
   "comparison of distinct pointer types (%0 and %1) uses non-standard "
   "composite pointer type %2">, InGroup<CompareDistinctPointerType>;
+def err_typecheck_op_on_nonoverlapping_address_space_pointers : Error<
+  "%select{comparison between %diff{ ($ and $)|}0,1"
+  "|arithmetic operation with operands of type %diff{ ($ and $)|}0,1}2"
+  " which are pointers to non-overlapping address spaces">;
 def err_typecheck_assign_const : Error<"read-only variable is not assignable">;
-def err_stmtexpr_file_scope : Error<
-  "statement expression not allowed at file scope">;
 def warn_mixed_sign_comparison : Warning<
   "comparison of integers of different signs: %0 and %1">,
   InGroup<SignCompare>, DefaultIgnore;
@@ -5230,6 +5271,11 @@ def err_bad_cstyle_cast_overload : Error<
 def err_bad_cxx_cast_generic : Error<
   "%select{const_cast|static_cast|reinterpret_cast|dynamic_cast|C-style cast|"
   "functional-style cast}0 from %1 to %2 is not allowed">;
+def err_bad_cxx_cast_unrelated_class : Error<
+  "%select{const_cast|static_cast|reinterpret_cast|dynamic_cast|C-style cast|"
+  "functional-style cast}0 from %1 to %2, which are not related by "
+  "inheritance, is not allowed">;
+def note_type_incomplete : Note<"%0 is incomplete">;
 def err_bad_cxx_cast_rvalue : Error<
   "%select{const_cast|static_cast|reinterpret_cast|dynamic_cast|C-style cast|"
   "functional-style cast}0 from rvalue to reference type %2">;
@@ -5269,7 +5315,7 @@ def err_bad_cxx_cast_member_pointer_size : Error<
   "cannot %select{||reinterpret_cast||C-style cast|}0 from member pointer "
   "type %1 to member pointer type %2 of different size">;
 def err_bad_reinterpret_cast_reference : Error<
-  "reinterpret_cast of a %0 to %1 needs its address which is not allowed">;
+  "reinterpret_cast of a %0 to %1 needs its address, which is not allowed">;
 def warn_undefined_reinterpret_cast : Warning<
   "reinterpret_cast from %0 to %1 has undefined behavior">,
   InGroup<UndefinedReinterpretCast>, DefaultIgnore;
@@ -5577,7 +5623,7 @@ def err_typecheck_deleted_function : Error<
   "invokes a deleted function">;
   
 def err_expected_class_or_namespace : Error<"%0 is not a class"
-  "%select{ or namespace|, namespace, or scoped enumeration}1">;
+  "%select{ or namespace|, namespace, or enumeration}1">;
 def err_invalid_declarator_scope : Error<"cannot define or redeclare %0 here "
   "because namespace %1 does not enclose namespace %2">;
 def err_invalid_declarator_global_scope : Error<
@@ -6078,13 +6124,19 @@ def warn_unused_voidptr : Warning<
   InGroup<UnusedValue>;
 def warn_unused_property_expr : Warning<
  "property access result unused - getters should not be used for side effects">,
-  InGroup<UnusedValue>;
+  InGroup<UnusedGetterReturnValue>;
 def warn_unused_container_subscript_expr : Warning<
  "container access result unused - container access should not be used for side effects">,
   InGroup<UnusedValue>;
 def warn_unused_call : Warning<
   "ignoring return value of function declared with %0 attribute">,
   InGroup<UnusedValue>;
+def warn_side_effects_unevaluated_context : Warning<
+  "expression with side effects has no effect in an unevaluated context">,
+  InGroup<UnevaluatedExpression>;
+def warn_side_effects_typeid : Warning<
+  "expression with side effects will be evaluated despite being used as an "
+  "operand to 'typeid'">, InGroup<PotentiallyEvaluatedExpression>;
 def warn_unused_result : Warning<
   "ignoring return value of function declared with warn_unused_result "
   "attribute">, InGroup<DiagGroup<"unused-result">>;
@@ -6125,7 +6177,6 @@ def warn_cast_qual2 : Warning<"cast from %0 to %1 must have all intermediate "
 
 // inline asm.
 let CategoryName = "Inline Assembly Issue" in {
-  def err_asm_wide_character : Error<"wide string is invalid in 'asm'">;
   def err_asm_invalid_lvalue_in_output : Error<"invalid lvalue in asm output">;
   def err_asm_invalid_output_constraint : Error<
     "invalid output constraint '%0' in asm">;
@@ -6133,11 +6184,15 @@ let CategoryName = "Inline Assembly Issue" in {
     "invalid lvalue in asm input for constraint '%0'">;
   def err_asm_invalid_input_constraint : Error<
     "invalid input constraint '%0' in asm">;
+  def err_asm_immediate_expected : Error<"constraint '%0' expects "
+    "an integer constant expression">;
   def err_asm_invalid_type_in_input : Error<
     "invalid type %0 in asm input for constraint '%1'">;
   def err_asm_tying_incompatible_types : Error<
     "unsupported inline asm: input with type "
     "%diff{$ matching output with type $|}0,1">;
+  def err_asm_unexpected_constraint_alternatives : Error<
+    "asm constraint has an unexpected number of alternatives: %0 vs %1">;
   def err_asm_incomplete_type : Error<"asm operand has incomplete type %0">;
   def err_asm_unknown_register_name : Error<"unknown register name '%0' in asm">;
   def err_asm_bad_register_type : Error<"bad type for named register variable">;
@@ -6148,6 +6203,8 @@ let CategoryName = "Inline Assembly Issue" in {
   def err_invalid_asm_cast_lvalue : Error<
     "invalid use of a cast in a inline asm context requiring an l-value: "
     "remove the cast or build with -fheinous-gnu-extensions">;
+  def err_invalid_asm_value_for_constraint
+      : Error <"value '%0' out of range for constraint '%1'">;
 
   def warn_asm_label_on_auto_decl : Warning<
     "ignored asm label '%0' on automatic variable">;
@@ -6313,6 +6370,9 @@ def err_base_class_has_flexible_array_member : Error<
 def err_incomplete_base_class : Error<"base class has incomplete type">;
 def err_duplicate_base_class : Error<
   "base class %0 specified more than once as a direct base class">;
+def warn_inaccessible_base_class : Warning<
+  "direct base %0 is inaccessible due to ambiguity:%1">,
+  InGroup<DiagGroup<"inaccessible-base">>;
 // FIXME: better way to display derivation?  Pass entire thing into diagclient?
 def err_ambiguous_derived_to_base_conv : Error<
   "ambiguous conversion from derived class %0 to base class %1:%2">;
@@ -6423,7 +6483,13 @@ def err_conv_function_to_array : Error<
 def err_conv_function_to_function : Error<
   "conversion function cannot convert to a function type">;
 def err_conv_function_with_complex_decl : Error<
-  "must use a typedef to declare a conversion to %0">;
+  "cannot specify any part of a return type in the "
+  "declaration of a conversion function"
+  "%select{"
+  "; put the complete type after 'operator'|"
+  "; use a typedef to declare a conversion to %1|"
+  "; use an alias template to declare a conversion to %1|"
+  "}0">;
 def err_conv_function_redeclared : Error<
   "conversion function cannot be redeclared">;
 def warn_conv_to_self_not_used : Warning<
@@ -6900,6 +6966,17 @@ def err_convertvector_non_vector_type : Error<
 def err_convertvector_incompatible_vector : Error<
   "first two arguments to __builtin_convertvector must have the same number of elements">;
 
+def err_first_argument_to_cwsc_not_call : Error<
+  "first argument to __builtin_call_with_static_chain must be a non-member call expression">;
+def err_first_argument_to_cwsc_block_call : Error<
+  "first argument to __builtin_call_with_static_chain must not be a block call">;
+def err_first_argument_to_cwsc_builtin_call : Error<
+  "first argument to __builtin_call_with_static_chain must not be a builtin call">;
+def err_first_argument_to_cwsc_pdtor_call : Error<
+  "first argument to __builtin_call_with_static_chain must not be a pseudo-destructor call">;
+def err_second_argument_to_cwsc_not_pointer : Error<
+  "second argument to __builtin_call_with_static_chain must be of pointer type">;
+
 def err_vector_incorrect_num_initializers : Error<
   "%select{too many|too few}0 elements in vector initialization (expected %1 elements, have %2)">;
 def err_altivec_empty_initializer : Error<"expected initializer">;
@@ -7176,7 +7253,7 @@ def err_omp_var_scope : Error<
 def err_omp_var_used : Error<
   "'#pragma omp %0' must precede all references to variable %q1">;
 def err_omp_var_thread_local : Error<
-  "variable %0 cannot be threadprivate because it is thread-local">;
+  "variable %0 cannot be threadprivate because it is %select{thread-local|a global named register variable}1">;
 def err_omp_private_incomplete_type : Error<
   "a private variable with incomplete type %0">;
 def err_omp_firstprivate_incomplete_type : Error<
@@ -7340,11 +7417,11 @@ def err_omp_parallel_reduction_in_task_firstprivate : Error<
 def err_omp_atomic_read_not_expression_statement : Error<
   "the statement for 'atomic read' must be an expression statement of form 'v = x;',"
   " where v and x are both lvalue expressions with scalar type">;
-def note_omp_atomic_read: Note<
+def note_omp_atomic_read_write: Note<
   "%select{expected an expression statement|expected built-in assignment operator|expected expression of scalar type|expected lvalue expression}0">;
 def err_omp_atomic_write_not_expression_statement : Error<
   "the statement for 'atomic write' must be an expression statement of form 'x = expr;',"
-  " where x is an l-value expression with scalar type">;
+  " where x is a lvalue expression with scalar type">;
 def err_omp_atomic_update_not_expression_statement : Error<
   "the statement for 'atomic%select{| update}0' must be an expression statement of form '++x;', '--x;', 'x++;', 'x--;', 'x binop= expr;', 'x = x binop expr' or 'x = expr binop x',"
   " where x is an l-value expression with scalar type">;
@@ -7366,6 +7443,10 @@ def note_omp_nested_teams_construct_here : Note<
   "nested teams construct here">;
 def note_omp_nested_statement_here : Note<
   "%select{statement|directive}0 outside teams construct here">;
+def err_omp_single_copyprivate_with_nowait : Error<
+  "the 'copyprivate' clause must not be used with the 'nowait' clause">;
+def note_omp_nowait_clause_here : Note<
+  "'nowait' clause is here">;
 } // end of OpenMP category
 
 let CategoryName = "Related Result Type Issue" in {
