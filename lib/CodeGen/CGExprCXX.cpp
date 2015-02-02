@@ -313,6 +313,10 @@ RValue CodeGenFunction::EmitCXXMemberOrOperatorMemberCallExpr(
                            (llvm::Instruction**)&C);
 
   // Add SOAAP-related vtable metadata for virtual calls
+  // Note: this function is now called by both EmitCXXMemberCallExpr
+  //       and EmitCXXOperatorMemberCallExpr, so we explicitly check 
+  //       for the EmitCXXMemberCallExpr case (this is the only one we
+  //       currently handle).     
   if (CGM.getCodeGenOpts().SoaapVTableDbg && UseVirtualCall && isa<CXXMemberCallExpr>(CE)) {
     if (C) {
       CXXRecordDecl* DRD = (CXXRecordDecl*)MD->getParent();
