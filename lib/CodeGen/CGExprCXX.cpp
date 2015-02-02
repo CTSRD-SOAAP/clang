@@ -132,7 +132,8 @@ void CodeGenFunction::addSoaapVTableMetadata(llvm::CallInst* C, CXXRecordDecl* R
       vtableVal = llvm::ConstantDataArray::getString(getLLVMContext(), mangledVTableName, false); 
       ss << "soaap_" << desc << "_vtable_name";
     }
-    llvm::MDNode* Node = llvm::MDNode::get(getLLVMContext(), vtableVal);
+    llvm::Metadata* MD = llvm::ValueAsMetadata::get(vtableVal);
+    llvm::MDNode* Node = llvm::MDNode::get(getLLVMContext(), MD);
     C->setMetadata(ss.str(), Node);
   }
 }
@@ -312,13 +313,13 @@ RValue CodeGenFunction::EmitCXXMemberOrOperatorMemberCallExpr(
                            (llvm::Instruction**)&C);
 
   // Add SOAAP-related vtable metadata for virtual calls
-  if (CGM.getCodeGenOpts().SoaapVTableDbg && UseVirtualCall) {
-    
+  if (CGM.getCodeGenOpts().SoaapVTableDbg && UseVirtualCall && isa<CXXMemberCallExpr>(CE)) {
     if (C) {
       CXXRecordDecl* DRD = (CXXRecordDecl*)MD->getParent();
       addSoaapVTableMetadata(C, DRD, "defining");
       bool staticTypeFound = false;
-      Expr* Receiver = CE->getImplicitObjectArgument()->IgnoreParenImpCasts();
+
+      Expr* Receiver = cast<CXXMemberCallExpr>(CE)->getImplicitObjectArgument()->IgnoreParenImpCasts();
       const Type* ReceiverType = Receiver->getType().getTypePtr();
       if (!ReceiverType->isRecordType()) {
         if (const PointerType* PT = ReceiverType->getAs<const PointerType>()) {
