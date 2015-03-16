@@ -352,7 +352,12 @@ def err_invalid_pixel_decl_spec_combination : Error<
 def err_invalid_vector_bool_decl_spec : Error<
   "cannot use '%0' with '__vector bool'">;
 def err_invalid_vector_double_decl_spec : Error <
-  "use of 'double' with '__vector' requires VSX support to be enabled (available on the POWER7 or later)">;
+  "use of 'double' with '__vector' requires VSX support to be enabled "
+  "(available on POWER7 or later)">;
+def err_invalid_vector_long_long_decl_spec : Error <
+  "use of 'long long' with '__vector bool' requires VSX support (available on "
+  "POWER7 or later) or extended Altivec support (available on POWER8 or later) " 
+  "to be enabled">;
 def err_invalid_vector_long_double_decl_spec : Error<
   "cannot use 'long double' with '__vector'">;
 def warn_vector_long_decl_spec_combination : Warning<
@@ -804,6 +809,10 @@ def warn_cxx98_compat_lambda : Warning<
 def err_lambda_missing_parens : Error<
   "lambda requires '()' before %select{'mutable'|return type|"
   "attribute specifier}0">;
+def warn_init_capture_direct_list_init : Warning<
+  "direct list initialization of a lambda init-capture will change meaning in "
+  "a future version of Clang; insert an '=' to avoid a change in behavior">,
+  InGroup<FutureCompat>;
 
 // Availability attribute
 def err_expected_version : Error<

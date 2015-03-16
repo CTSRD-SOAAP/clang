@@ -32,8 +32,10 @@ class UnwrappedLineFormatter {
 public:
   UnwrappedLineFormatter(ContinuationIndenter *Indenter,
                          WhitespaceManager *Whitespaces,
-                         const FormatStyle &Style)
-      : Indenter(Indenter), Whitespaces(Whitespaces), Style(Style) {}
+                         const FormatStyle &Style,
+                         const AdditionalKeywords &Keywords)
+      : Indenter(Indenter), Whitespaces(Whitespaces), Style(Style),
+        Keywords(Keywords) {}
 
   unsigned format(const SmallVectorImpl<AnnotatedLine *> &Lines, bool DryRun,
                   int AdditionalIndent = 0, bool FixBadIndentation = false);
@@ -75,7 +77,8 @@ private:
   /// For example, 'public:' labels in classes are offset by 1 or 2
   /// characters to the left from their level.
   int getIndentOffset(const FormatToken &RootToken) {
-    if (Style.Language == FormatStyle::LK_Java)
+    if (Style.Language == FormatStyle::LK_Java ||
+        Style.Language == FormatStyle::LK_JavaScript)
       return 0;
     if (RootToken.isAccessSpecifier(false) || RootToken.isObjCAccessSpecifier())
       return Style.AccessModifierOffset;
@@ -153,6 +156,7 @@ private:
   ContinuationIndenter *Indenter;
   WhitespaceManager *Whitespaces;
   FormatStyle Style;
+  const AdditionalKeywords &Keywords;
 
   llvm::SpecificBumpPtrAllocator<StateNode> Allocator;
 

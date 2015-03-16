@@ -440,8 +440,11 @@ def Availability : InheritableAttr {
   let AdditionalMembers =
 [{static llvm::StringRef getPrettyPlatformName(llvm::StringRef Platform) {
     return llvm::StringSwitch<llvm::StringRef>(Platform)
+             .Case("android", "Android")
              .Case("ios", "iOS")
              .Case("macosx", "OS X")
+             .Case("ios_app_extension", "iOS (App Extension)")
+             .Case("macosx_app_extension", "OS X (App Extension)")
              .Default(llvm::StringRef());
 } }];
   let HasCustomParsing = 1;
@@ -790,9 +793,9 @@ def IBOutletCollection : InheritableAttr {
   let Documentation = [Undocumented];
 }
 
-def Malloc : InheritableAttr {
-  let Spellings = [GCC<"malloc">];
-//  let Subjects = [Function];
+def Restrict : InheritableAttr {
+  let Spellings = [Declspec<"restrict">, GCC<"malloc">];
+  let Subjects = SubjectList<[Function]>;
   let Documentation = [Undocumented];
 }
 
@@ -1761,17 +1764,17 @@ def TypeTagForDatatype : InheritableAttr {
 
 // Microsoft-related attributes
 
-def MsNoVTable : InheritableAttr {
+def MSNoVTable : InheritableAttr {
   let Spellings = [Declspec<"novtable">];
   let Subjects = SubjectList<[CXXRecord]>;
-  let Documentation = [Undocumented];
+  let Documentation = [MSNoVTableDocs];
 }
 
-def MsProperty : IgnoredAttr {
+def : IgnoredAttr {
   let Spellings = [Declspec<"property">];
 }
 
-def MsStruct : InheritableAttr {
+def MSStruct : InheritableAttr {
   let Spellings = [GCC<"ms_struct">];
   let Subjects = SubjectList<[Record]>;
   let Documentation = [Undocumented];

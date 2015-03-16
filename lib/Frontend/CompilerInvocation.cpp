@@ -253,7 +253,7 @@ static bool ParseAnalyzerArgs(AnalyzerOptions &Opts, ArgList &Args,
     for (unsigned i = 0, e = checkers.size(); i != e; ++i)
       Opts.CheckersControlList.push_back(std::make_pair(checkers[i], enable));
   }
-  
+
   // Go through the analyzer configuration options.
   for (arg_iterator it = Args.filtered_begin(OPT_analyzer_config),
        ie = Args.filtered_end(); it != ie; ++it) {
@@ -472,7 +472,12 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
                                        OPT_fno_function_sections, false);
   Opts.DataSections = Args.hasFlag(OPT_fdata_sections,
                                    OPT_fno_data_sections, false);
+  Opts.UniqueSectionNames = Args.hasFlag(OPT_funique_section_names,
+                                         OPT_fno_unique_section_names, true);
+
   Opts.MergeFunctions = Args.hasArg(OPT_fmerge_functions);
+
+  Opts.MSVolatile = Args.hasArg(OPT_fms_volatile);
 
   Opts.VectorizeBB = Args.hasArg(OPT_vectorize_slp_aggressive);
   Opts.VectorizeLoop = Args.hasArg(OPT_vectorize_loops);
@@ -710,9 +715,9 @@ bool clang::ParseDiagnosticArgs(DiagnosticOptions &Opts, ArgList &Args,
   if (Format == "clang")
     Opts.setFormat(DiagnosticOptions::Clang);
   else if (Format == "msvc")
-    Opts.setFormat(DiagnosticOptions::Msvc);
+    Opts.setFormat(DiagnosticOptions::MSVC);
   else if (Format == "msvc-fallback") {
-    Opts.setFormat(DiagnosticOptions::Msvc);
+    Opts.setFormat(DiagnosticOptions::MSVC);
     Opts.CLFallbackMode = true;
   } else if (Format == "vi")
     Opts.setFormat(DiagnosticOptions::Vi);
@@ -1389,6 +1394,9 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
   if (Args.hasArg(OPT_fcuda_is_device))
     Opts.CUDAIsDevice = 1;
 
+  if (Args.hasArg(OPT_fcuda_allow_host_calls_from_host_device))
+    Opts.CUDAAllowHostCallsFromHostDevice = 1;
+
   if (Opts.ObjC1) {
     if (Arg *arg = Args.getLastArg(OPT_fobjc_runtime_EQ)) {
       StringRef value = arg->getValue();
@@ -1512,6 +1520,7 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
   Opts.ModulesErrorRecovery = !Args.hasArg(OPT_fno_modules_error_recovery);
   Opts.ModulesImplicitMaps = Args.hasFlag(OPT_fmodules_implicit_maps,
                                           OPT_fno_modules_implicit_maps, true);
+  Opts.ImplicitModules = !Args.hasArg(OPT_fno_implicit_modules);
   Opts.CharIsSigned = Opts.OpenCL || !Args.hasArg(OPT_fno_signed_char);
   Opts.WChar = Opts.CPlusPlus && !Args.hasArg(OPT_fno_wchar);
   Opts.ShortWChar = Args.hasFlag(OPT_fshort_wchar, OPT_fno_short_wchar, false);
@@ -1521,6 +1530,9 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
   Opts.NoMathBuiltin = Args.hasArg(OPT_fno_math_builtin);
   Opts.AssumeSaneOperatorNew = !Args.hasArg(OPT_fno_assume_sane_operator_new);
   Opts.SizedDeallocation |= Args.hasArg(OPT_fsized_deallocation);
+  Opts.SizedDeallocation &= !Args.hasArg(OPT_fno_sized_deallocation);
+  Opts.DefineSizedDeallocation = Opts.SizedDeallocation &&
+      Args.hasArg(OPT_fdefine_sized_deallocation);
   Opts.HeinousExtensions = Args.hasArg(OPT_fheinous_gnu_extensions);
   Opts.AccessControl = !Args.hasArg(OPT_fno_access_control);
   Opts.ElideConstructors = !Args.hasArg(OPT_fno_elide_constructors);
@@ -1567,8 +1579,10 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
   Opts.DebuggerObjCLiteral = Args.hasArg(OPT_fdebugger_objc_literal);
   Opts.ApplePragmaPack = Args.hasArg(OPT_fapple_pragma_pack);
   Opts.CurrentModule = Args.getLastArgValue(OPT_fmodule_name);
+  Opts.AppExt = Args.hasArg(OPT_fapplication_extension);
   Opts.ImplementationOfModule =
       Args.getLastArgValue(OPT_fmodule_implementation_of);
+  Opts.ModuleFeatures = Args.getAllArgValues(OPT_fmodule_feature);
   Opts.NativeHalfType = Opts.NativeHalfType;
   Opts.HalfArgsAndReturns = Args.hasArg(OPT_fallow_half_arguments_and_returns);
   Opts.GNUAsm = !Args.hasArg(OPT_fno_gnu_inline_asm);
@@ -1669,7 +1683,7 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
   // -fsanitize-address-field-padding=N has to be a LangOpt, parse it here.
   Opts.SanitizeAddressFieldPadding =
       getLastArgIntValue(Args, OPT_fsanitize_address_field_padding, 0, Diags);
-  Opts.SanitizerBlacklistFile = Args.getLastArgValue(OPT_fsanitize_blacklist);
+  Opts.SanitizerBlacklistFiles = Args.getAllArgValues(OPT_fsanitize_blacklist);
 }
 
 static void ParsePreprocessorArgs(PreprocessorOptions &Opts, ArgList &Args,
@@ -1814,6 +1828,7 @@ static void ParsePreprocessorOutputArgs(PreprocessorOutputOptions &Opts,
   Opts.ShowMacroComments = Args.hasArg(OPT_CC);
   Opts.ShowMacros = Args.hasArg(OPT_dM) || Args.hasArg(OPT_dD);
   Opts.RewriteIncludes = Args.hasArg(OPT_frewrite_includes);
+  Opts.UseLineDirectives = Args.hasArg(OPT_fuse_line_directives);
 }
 
 static void ParseTargetArgs(TargetOptions &Opts, ArgList &Args) {

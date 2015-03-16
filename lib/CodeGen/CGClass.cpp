@@ -24,6 +24,7 @@
 #include "clang/Basic/TargetBuiltins.h"
 #include "clang/CodeGen/CGFunctionInfo.h"
 #include "clang/Frontend/CodeGenOptions.h"
+#include "llvm/IR/Intrinsics.h"
 
 using namespace clang;
 using namespace CodeGen;
@@ -1747,9 +1748,10 @@ void CodeGenFunction::EmitCXXConstructorCall(const CXXConstructorDecl *D,
            "trivial 1-arg ctor not a copy/move ctor");
 
     const Expr *Arg = E->getArg(0);
-    QualType Ty = Arg->getType();
+    QualType SrcTy = Arg->getType();
     llvm::Value *Src = EmitLValue(Arg).getAddress();
-    EmitAggregateCopy(This, Src, Ty);
+    QualType DestTy = getContext().getTypeDeclType(D->getParent());
+    EmitAggregateCopyCtor(This, Src, DestTy, SrcTy);
     return;
   }
 
@@ -1789,7 +1791,9 @@ CodeGenFunction::EmitSynthesizedCXXCopyCtorCall(const CXXConstructorDecl *D,
     assert(E->getNumArgs() == 1 && "unexpected argcount for trivial ctor");
     assert(D->isCopyOrMoveConstructor() &&
            "trivial 1-arg ctor not a copy/move ctor");
-    EmitAggregateCopy(This, Src, E->arg_begin()->getType());
+    EmitAggregateCopyCtor(This, Src,
+                          getContext().getTypeDeclType(D->getParent()),
+                          E->arg_begin()->getType());
     return;
   }
   llvm::Value *Callee = CGM.getAddrOfCXXStructor(D, StructorType::Complete);
@@ -1954,7 +1958,7 @@ CodeGenFunction::InitializeVTablePointer(BaseSubobject Base,
   // Don't initialize the vtable pointer if the class is marked with the
   // 'novtable' attribute.
   if ((RD == VTableClass || RD == NearestVBase) &&
-      VTableClass->hasAttr<MsNoVTableAttr>())
+      VTableClass->hasAttr<MSNoVTableAttr>())
     return;
 
   // Compute the address point.
@@ -2084,6 +2088,127 @@ llvm::Value *CodeGenFunction::GetVTablePtr(llvm::Value *This,
   return VTable;
 }
 
+void CodeGenFunction::EmitVTablePtrCheckForCall(const CXXMethodDecl *MD,
+                                                llvm::Value *VTable) {
+  if (!SanOpts.has(SanitizerKind::CFIVptr))
+    return;
+
+  EmitVTablePtrCheck(MD->getParent(), VTable);
+}
+
+// If a class has a single non-virtual base and does not introduce or override
+// virtual member functions or fields, it will have the same layout as its base.
+// This function returns the least derived such class.
+//
+// Casting an instance of a base class to such a derived class is technically
+// undefined behavior, but it is a relatively common hack for introducing member
+// functions on class instances with specific properties (e.g. llvm::Operator)
+// that works under most compilers and should not have security implications, so
+// we allow it by default. It can be disabled with -fsanitize=cfi-cast-strict.
+static const CXXRecordDecl *
+LeastDerivedClassWithSameLayout(const CXXRecordDecl *RD) {
+  if (!RD->field_empty())
+    return RD;
+
+  if (RD->getNumVBases() != 0)
+    return RD;
+
+  if (RD->getNumBases() != 1)
+    return RD;
+
+  for (const CXXMethodDecl *MD : RD->methods()) {
+    if (MD->isVirtual()) {
+      // Virtual member functions are only ok if they are implicit destructors
+      // because the implicit destructor will have the same semantics as the
+      // base class's destructor if no fields are added.
+      if (isa<CXXDestructorDecl>(MD) && MD->isImplicit())
+        continue;
+      return RD;
+    }
+  }
+
+  return LeastDerivedClassWithSameLayout(
+      RD->bases_begin()->getType()->getAsCXXRecordDecl());
+}
+
+void CodeGenFunction::EmitVTablePtrCheckForCast(QualType T,
+                                                llvm::Value *Derived,
+                                                bool MayBeNull) {
+  if (!getLangOpts().CPlusPlus)
+    return;
+
+  auto *ClassTy = T->getAs<RecordType>();
+  if (!ClassTy)
+    return;
+
+  const CXXRecordDecl *ClassDecl = cast<CXXRecordDecl>(ClassTy->getDecl());
+
+  if (!ClassDecl->isCompleteDefinition() || !ClassDecl->isDynamicClass())
+    return;
+
+  SmallString<64> MangledName;
+  llvm::raw_svector_ostream Out(MangledName);
+  CGM.getCXXABI().getMangleContext().mangleCXXRTTI(T.getUnqualifiedType(),
+                                                   Out);
+
+  // Blacklist based on the mangled type.
+  if (CGM.getContext().getSanitizerBlacklist().isBlacklistedType(Out.str()))
+    return;
+
+  if (!SanOpts.has(SanitizerKind::CFICastStrict))
+    ClassDecl = LeastDerivedClassWithSameLayout(ClassDecl);
+
+  llvm::BasicBlock *ContBlock = 0;
+
+  if (MayBeNull) {
+    llvm::Value *DerivedNotNull =
+        Builder.CreateIsNotNull(Derived, "cast.nonnull");
+
+    llvm::BasicBlock *CheckBlock = createBasicBlock("cast.check");
+    ContBlock = createBasicBlock("cast.cont");
+
+    Builder.CreateCondBr(DerivedNotNull, CheckBlock, ContBlock);
+
+    EmitBlock(CheckBlock);
+  }
+
+  llvm::Value *VTable = GetVTablePtr(Derived, Int8PtrTy);
+  EmitVTablePtrCheck(ClassDecl, VTable);
+
+  if (MayBeNull) {
+    Builder.CreateBr(ContBlock);
+    EmitBlock(ContBlock);
+  }
+}
+
+void CodeGenFunction::EmitVTablePtrCheck(const CXXRecordDecl *RD,
+                                         llvm::Value *VTable) {
+  // FIXME: Add blacklisting scheme.
+  if (RD->isInStdNamespace())
+    return;
+
+  std::string OutName;
+  llvm::raw_string_ostream Out(OutName);
+  CGM.getCXXABI().getMangleContext().mangleCXXVTableBitSet(RD, Out);
+
+  llvm::Value *BitSetName = llvm::MetadataAsValue::get(
+      getLLVMContext(), llvm::MDString::get(getLLVMContext(), Out.str()));
+
+  llvm::Value *BitSetTest = Builder.CreateCall2(
+      CGM.getIntrinsic(llvm::Intrinsic::bitset_test),
+      Builder.CreateBitCast(VTable, CGM.Int8PtrTy), BitSetName);
+
+  llvm::BasicBlock *ContBlock = createBasicBlock("vtable.check.cont");
+  llvm::BasicBlock *TrapBlock = createBasicBlock("vtable.check.trap");
+
+  Builder.CreateCondBr(BitSetTest, ContBlock, TrapBlock);
+
+  EmitBlock(TrapBlock);
+  Builder.CreateCall(CGM.getIntrinsic(llvm::Intrinsic::trap));
+  Builder.CreateUnreachable();
+
+  EmitBlock(ContBlock);
+}
 
 // FIXME: Ideally Expr::IgnoreParenNoopCasts should do this, but it doesn't do
 // quite what we want.
@@ -2169,7 +2294,7 @@ CodeGenFunction::CanDevirtualizeMemberFunctionCall(const Expr *Base,
   
   // Check if this is a call expr that returns a record type.
   if (const CallExpr *CE = dyn_cast<CallExpr>(Base))
-    return CE->getCallReturnType()->isRecordType();
+    return CE->getCallReturnType(getContext())->isRecordType();
 
   // We can't devirtualize the call.
   return false;

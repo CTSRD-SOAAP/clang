@@ -232,6 +232,10 @@ bool ContinuationIndenter::mustBreak(const LineState &State) {
       Previous.is(tok::l_brace) && !Current.isOneOf(tok::r_brace, tok::comment))
     return true;
 
+  if (Current.is(tok::lessless) && Previous.is(tok::identifier) &&
+      Previous.TokenText == "endl")
+    return true;
+
   return false;
 }
 
@@ -303,7 +307,9 @@ void ContinuationIndenter::addTokenOnCurrentLine(LineState &State, bool DryRun,
     else if (State.Stack.back().Indent + Current.LongestObjCSelectorName >
              State.Column + Spaces + Current.ColumnWidth)
       State.Stack.back().ColonPos =
-          State.Stack.back().Indent + Current.LongestObjCSelectorName;
+          std::max(State.FirstIndent + Style.ContinuationIndentWidth,
+                   State.Stack.back().Indent) +
+          Current.LongestObjCSelectorName;
     else
       State.Stack.back().ColonPos = State.Column + Spaces + Current.ColumnWidth;
   }
@@ -365,7 +371,7 @@ void ContinuationIndenter::addTokenOnCurrentLine(LineState &State, bool DryRun,
       const FormatToken *Next = Previous.MatchingParen->getNextNonComment();
       HasTrailingCall = Next && Next->isMemberAccess();
     }
-    if (HasTrailingCall &&
+    if (HasTrailingCall && State.Stack.size() > 1 &&
         State.Stack[State.Stack.size() - 2].CallContinuation == 0)
       State.Stack.back().LastSpace = State.Column;
   }
@@ -576,7 +582,7 @@ unsigned ContinuationIndenter::getNewLineColumn(const LineState &State) {
       return State.Stack.back().StartOfArraySubscripts;
     return ContinuationIndent;
   }
-  if (NextNonComment->is(TT_StartOfName) ||
+  if (NextNonComment->isOneOf(TT_StartOfName, TT_PointerOrReference) ||
       Previous.isOneOf(tok::coloncolon, tok::equal)) {
     return ContinuationIndent;
   }
@@ -643,12 +649,6 @@ unsigned ContinuationIndenter::moveStateToNextToken(LineState &State,
       State.Stack.back().AvoidBinPacking = true;
     State.Stack.back().BreakBeforeParameter = false;
   }
-
-  // In ObjC method declaration we align on the ":" of parameters, but we need
-  // to ensure that we indent parameters on subsequent lines by at least our
-  // continuation indent width.
-  if (Current.is(TT_ObjCMethodSpecifier))
-    State.Stack.back().Indent += Style.ContinuationIndentWidth;
 
   // Insert scopes created by fake parenthesis.
   const FormatToken *Previous = Current.getPreviousNonComment();
@@ -718,7 +718,8 @@ void ContinuationIndenter::moveStatePastFakeLParens(LineState &State,
   // 'return', assignments or opening <({[. The indentation for these cases
   // is special cased.
   bool SkipFirstExtraIndent =
-      (Previous && (Previous->opensScope() || Previous->is(tok::kw_return) ||
+      (Previous && (Previous->opensScope() ||
+                    Previous->isOneOf(tok::semi, tok::kw_return) ||
                     (Previous->getPrecedence() == prec::Assignment &&
                      Style.AlignOperands) ||
                     Previous->is(TT_ObjCMethodExpr)));
@@ -820,7 +821,6 @@ void ContinuationIndenter::moveStatePastScopeOpener(LineState &State,
       ++NewIndentLevel;
     } else {
       NewIndent = State.Stack.back().LastSpace + Style.ContinuationIndentWidth;
-      NewIndent = std::min(State.Column + 1, NewIndent);
     }
     const FormatToken *NextNoComment = Current.getNextNonComment();
     AvoidBinPacking =

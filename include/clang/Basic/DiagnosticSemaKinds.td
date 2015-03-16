@@ -889,10 +889,6 @@ def warn_dealloc_in_category : Warning<
 InGroup<DeallocInCategory>;
 def err_gc_weak_property_strong_type : Error<
   "weak attribute declared on a __strong type property in GC mode">;
-def warn_receiver_is_weak : Warning <
-  "weak %select{receiver|property|implicit property}0 may be "
-  "unpredictably set to nil">,
-  InGroup<DiagGroup<"receiver-is-weak">>, DefaultIgnore;
 def note_arc_assign_to_strong : Note<
   "assign the value to a strong variable to keep the object alive during use">;
 def warn_arc_repeated_use_of_weak : Warning <
@@ -1241,6 +1237,9 @@ def err_storageclass_invalid_for_member : Error<
   "storage class specified for a member declaration">;
 def err_mutable_function : Error<"'mutable' cannot be applied to functions">;
 def err_mutable_reference : Error<"'mutable' cannot be applied to references">;
+def ext_mutable_reference : ExtWarn<
+  "'mutable' on a reference type is a Microsoft extension">,
+  InGroup<Microsoft>;
 def err_mutable_const : Error<"'mutable' and 'const' cannot be mixed">;
 def err_mutable_nonmember : Error<
   "'mutable' can only be applied to member variables">;
@@ -1299,6 +1298,8 @@ def err_missing_default_ctor : Error<
   "%select{|implicit default |inheriting }0constructor for %1 must explicitly "
   "initialize the %select{base class|member}2 %3 which does not have a default "
   "constructor">;
+def note_due_to_dllexported_class : Note<
+  "due to '%0' being dllexported%select{|; try compiling in C++11 mode}1">;
 
 def err_illegal_union_or_anon_struct_member : Error<
   "%select{anonymous struct|union}0 member %1 has a non-trivial "
@@ -1642,6 +1643,10 @@ def err_auto_var_init_multiple_expressions : Error<
 def err_auto_var_init_paren_braces : Error<
   "cannot deduce type for variable %0 with type %1 from "
   "parenthesized initializer list">;
+def warn_auto_var_direct_list_init : Warning<
+  "direct list initialization of a variable with a deduced type will change "
+  "meaning in a future version of Clang; insert an '=' to avoid a change in "
+  "behavior">, InGroup<FutureCompat>;
 def err_auto_new_ctor_multiple_expressions : Error<
   "new expression for type %0 contains multiple constructor arguments">;
 def err_auto_missing_trailing_return : Error<
@@ -2028,6 +2033,8 @@ def err_typecheck_vector_not_convertable : Error<
   "can't convert between vector values of different size (%0 and %1)">;
 def err_typecheck_vector_not_convertable_non_scalar : Error<
   "can't convert between vector and non-scalar values (%0 and %1)">;
+def err_typecheck_vector_lengths_not_equal : Error<
+  "vector operands do not have the same number of elements (%0 and %1)">;
 def err_ext_vector_component_exceeds_length : Error<
   "vector component access exceeds type %0">;
 def err_ext_vector_component_name_illegal : Error<
@@ -2394,6 +2401,13 @@ def warn_fun_excludes_mutex : Warning<
 def warn_cannot_resolve_lock : Warning<
   "cannot resolve lock expression">,
   InGroup<ThreadSafetyAnalysis>, DefaultIgnore;
+def warn_acquired_before : Warning<
+  "%0 '%1' must be acquired before '%2'">,
+  InGroup<ThreadSafetyAnalysis>, DefaultIgnore;
+def warn_acquired_before_after_cycle : Warning<
+  "Cycle in acquired_before/after dependencies, starting with '%0'">,
+  InGroup<ThreadSafetyAnalysis>, DefaultIgnore;
+
 
 // Thread safety warnings negative capabilities
 def warn_acquire_requires_negative_cap : Warning<
@@ -2638,9 +2652,6 @@ def warn_attribute_nonnull_no_pointers : Warning<
   InGroup<IgnoredAttributes>;
 def warn_attribute_nonnull_parm_no_args : Warning<
   "'nonnull' attribute when used on parameters takes no arguments">,
-  InGroup<IgnoredAttributes>;
-def warn_attribute_malloc_pointer_only : Warning<
-  "'malloc' attribute only applies to functions returning a pointer type">,
   InGroup<IgnoredAttributes>;
 def warn_attribute_sentinel_named_arguments : Warning<
   "'sentinel' attribute requires named arguments">,
@@ -4160,9 +4171,10 @@ def warn_missing_field_initializers : Warning<
   "missing field %0 initializer">,
   InGroup<MissingFieldInitializers>, DefaultIgnore;
 def warn_braces_around_scalar_init : Warning<
-  "braces around scalar initializer">;
+  "braces around scalar initializer">, InGroup<DiagGroup<"braced-scalar-init">>;
 def ext_many_braces_around_scalar_init : ExtWarn<
-  "too many braces around scalar initializer">;
+  "too many braces around scalar initializer">,
+  InGroup<DiagGroup<"many-braces-around-scalar-init">>;
 def ext_complex_component_init : Extension<
   "complex initialization specifying real and imaginary components "
   "is an extension">, InGroup<DiagGroup<"complex-component-init">>;
@@ -4291,6 +4303,12 @@ def note_protected_by_cxx_try : Note<
   "jump bypasses initialization of try block">;
 def note_protected_by_cxx_catch : Note<
   "jump bypasses initialization of catch block">;
+def note_protected_by_seh_try : Note<
+  "jump bypasses initialization of __try block">;
+def note_protected_by_seh_except : Note<
+  "jump bypasses initialization of __except block">;
+def note_protected_by_seh_finally : Note<
+  "jump bypasses initialization of __finally block">;
 def note_protected_by___block : Note<
   "jump bypasses setup of __block variable">;
 def note_protected_by_objc_ownership : Note<
@@ -4323,6 +4341,12 @@ def note_exits_cxx_try : Note<
   "jump exits try block">;
 def note_exits_cxx_catch : Note<
   "jump exits catch block">;
+def note_exits_seh_try : Note<
+  "jump exits __try block">;
+def note_exits_seh_except : Note<
+  "jump exits __except block">;
+def note_exits_seh_finally : Note<
+  "jump exits __finally block">;
 def note_exits_objc_autoreleasepool : Note<
   "jump exits autoreleasepool block">;
 def note_exits_objc_ownership : Note<
@@ -4865,6 +4889,8 @@ def err_ivar_reference_type : Error<
   "instance variables cannot be of reference type">;
 def err_typecheck_illegal_increment_decrement : Error<
   "cannot %select{decrement|increment}1 value of type %0">;
+def err_typecheck_expect_int : Error<
+  "used type %0 where integer is required">;
 def err_typecheck_arithmetic_incomplete_type : Error<
   "arithmetic on a pointer to an incomplete type %0">;
 def err_typecheck_pointer_arith_function_type : Error<
@@ -5028,6 +5054,9 @@ def warn_null_in_comparison_operation : Warning<
   "comparison between NULL and non-pointer "
   "%select{(%1 and NULL)|(NULL and %1)}0">,
   InGroup<NullArithmetic>;
+def err_shift_rhs_only_vector : Error<
+  "requested shift is a vector of type %0 but the first operand is not a "
+  "vector (%1)">;
 
 def warn_logical_not_on_lhs_of_comparison : Warning<
   "logical not is only applied to the left hand side of this comparison">,
@@ -5230,6 +5259,10 @@ def err_objc_object_catch : Error<
   "can't catch an Objective-C object by value">;
 def err_incomplete_type_objc_at_encode : Error<
   "'@encode' of incomplete type %0">;
+def warn_objc_circular_container : Warning<
+  "adding '%0' to '%0' might cause circular dependency in container">,
+  InGroup<DiagGroup<"objc-circular-container">>;
+def note_objc_circular_container_declared_here : Note<"'%0' declared here">;
 
 def warn_setter_getter_impl_required : Warning<
   "property %0 requires method %1 to be defined - "
@@ -5447,6 +5480,15 @@ def err_exceptions_disabled : Error<
   "cannot use '%0' with exceptions disabled">;
 def err_objc_exceptions_disabled : Error<
   "cannot use '%0' with Objective-C exceptions disabled">;
+def err_seh_try_outside_functions : Error<
+  "cannot use SEH '__try' in blocks, captured regions, or Obj-C method decls">;
+def err_mixing_cxx_try_seh_try : Error<
+  "cannot use C++ 'try' in the same function as SEH '__try'">;
+def note_conflicting_try_here : Note<
+  "conflicting %0 here">;
+def warn_jump_out_of_seh_finally : Warning<
+  "jump out of __finally block has undefined behavior">,
+  InGroup<DiagGroup<"jump-seh-finally">>;
 def warn_non_virtual_dtor : Warning<
   "%0 has virtual functions but non-virtual destructor">,
   InGroup<NonVirtualDtor>, DefaultIgnore;
@@ -5488,6 +5530,12 @@ def err_conditional_ambiguous : Error<
 def err_conditional_ambiguous_ovl : Error<
   "conditional expression is ambiguous; %diff{$ and $|types}0,1 "
   "can be converted to several common types">;
+def err_conditional_vector_size : Error<
+  "vector condition type %0 and result type %1 do not have the same number "
+  "of elements">;
+def err_conditional_vector_element_size : Error<
+  "vector condition type %0 and result type %1 do not have elements of the "
+  "same size">;
 
 def err_throw_incomplete : Error<
   "cannot throw object of incomplete type %0">;
@@ -5600,8 +5648,8 @@ def err_pseudo_dtor_type_mismatch : Error<
 def err_pseudo_dtor_call_with_args : Error<
   "call to pseudo-destructor cannot have any arguments">;
 def err_dtor_expr_without_call : Error<
-  "%select{destructor reference|pseudo-destructor expression}0 must be "
-  "called immediately with '()'">;
+  "reference to %select{destructor|pseudo-destructor}0 must be called"
+  "%select{|; did you mean to call it with no arguments?}1">;
 def err_pseudo_dtor_destructor_non_type : Error<
   "%0 does not refer to a type name in pseudo-destructor expression; expected "
   "the name of type %1">;
@@ -6029,6 +6077,9 @@ def err_global_call_not_config : Error<
 def err_ref_bad_target : Error<
   "reference to %select{__device__|__global__|__host__|__host__ __device__}0 "
   "function %1 in %select{__device__|__global__|__host__|__host__ __device__}2 function">;
+def warn_host_calls_from_host_device : Warning<
+  "calling __host__ function %0 from __host__ __device__ function %1 can lead to runtime errors">,
+  InGroup<CudaCompat>;
 
 def warn_non_pod_vararg_with_format_string : Warning<
   "cannot pass %select{non-POD|non-trivial}0 object of type %1 to variadic "
@@ -6070,12 +6121,14 @@ def err_typecheck_call_invalid_ordered_compare : Error<
 def err_typecheck_call_invalid_unary_fp : Error<
   "floating point classification requires argument of floating point type "
   "(passed in %0)">;
+def err_typecheck_cond_expect_int_float : Error<
+  "used type %0 where integer or floating point type is required">;
 def err_typecheck_cond_expect_scalar : Error<
   "used type %0 where arithmetic or pointer type is required">;
+def err_typecheck_cond_expect_nonfloat : Error<
+  "used type %0 where floating point type is not allowed">;
 def ext_typecheck_cond_one_void : Extension<
   "C99 forbids conditional expressions with only one void side">;
-def err_typecheck_cond_expect_scalar_or_vector : Error<
-  "used type %0 where arithmetic, pointer, or vector type is required">;
 def err_typecheck_cast_to_incomplete : Error<
   "cast to incomplete type %0">;
 def ext_typecheck_cast_nonscalar : Extension<
@@ -6594,6 +6647,10 @@ def warn_format_conversion_argument_type_mismatch : Warning<
   "format specifies type %0 but the argument has "
   "%select{type|underlying type}2 %1">,
   InGroup<Format>;
+def warn_format_conversion_argument_type_mismatch_pedantic : Extension<
+  "format specifies type %0 but the argument has "
+  "%select{type|underlying type}2 %1">,
+  InGroup<FormatPedantic>;
 def warn_format_argument_needs_cast : Warning<
   "%select{values of type|enum values with underlying type}2 '%0' should not "
   "be used as format arguments; add an explicit cast to %1 instead">,
@@ -6996,6 +7053,11 @@ def note_neon_vector_initializer_non_portable_q : Note<
   "vcombine_%0%1(vcreate_%0%1(), vcreate_%0%1()) to initialize from integer "
   "constants">;
 
+def err_builtin_longjmp_unsupported : Error<
+  "__builtin_longjmp is not supported for the current target">;
+def err_builtin_setjmp_unsupported : Error<
+  "__builtin_setjmp is not supported for the current target">;
+
 def err_builtin_longjmp_invalid_val : Error<
   "argument to __builtin_longjmp must be a constant 1">;
 def err_builtin_requires_language : Error<"'%0' is only available in %1">;
@@ -7188,8 +7250,13 @@ def err_filter_expression_integral : Error<
 
 def err_non_asm_stmt_in_naked_function : Error<
   "non-ASM statement in naked function is not supported">;
+def err_asm_naked_this_ref : Error<
+  "'this' pointer references not allowed in naked functions">;
 def err_asm_naked_parm_ref : Error<
   "parameter references not allowed in naked functions">;
+
+def ext_deprecated_attr_is_a_cxx14_extension : ExtWarn<
+  "use of the 'deprecated' attribute is a C++14 extension">, InGroup<CXX14>;
 
 // OpenCL warnings and errors.
 def err_invalid_astype_of_different_size : Error<
@@ -7423,8 +7490,15 @@ def err_omp_atomic_write_not_expression_statement : Error<
   "the statement for 'atomic write' must be an expression statement of form 'x = expr;',"
   " where x is a lvalue expression with scalar type">;
 def err_omp_atomic_update_not_expression_statement : Error<
-  "the statement for 'atomic%select{| update}0' must be an expression statement of form '++x;', '--x;', 'x++;', 'x--;', 'x binop= expr;', 'x = x binop expr' or 'x = expr binop x',"
+  "the statement for 'atomic update' must be an expression statement of form '++x;', '--x;', 'x++;', 'x--;', 'x binop= expr;', 'x = x binop expr' or 'x = expr binop x',"
   " where x is an l-value expression with scalar type">;
+def err_omp_atomic_not_expression_statement : Error<
+  "the statement for 'atomic' must be an expression statement of form '++x;', '--x;', 'x++;', 'x--;', 'x binop= expr;', 'x = x binop expr' or 'x = expr binop x',"
+  " where x is an l-value expression with scalar type">;
+def note_omp_atomic_update: Note<
+  "%select{expected an expression statement|expected built-in binary or unary operator|expected unary decrement/increment operation|"
+  "expected expression of scalar type|expected assignment expression|expected built-in binary operator|"
+  "expected one of '+', '*', '-', '/', '&', '^', '%|', '<<', or '>>' built-in operations|expected in right hand side of expression}0">;
 def err_omp_atomic_capture_not_expression_statement : Error<
   "the statement for 'atomic capture' must be an expression statement of form 'v = ++x;', 'v = --x;', 'v = x++;', 'v = x--;', 'v = x binop= expr;', 'v = x = x binop expr' or 'v = x = expr binop x',"
   " where x and v are both l-value expressions with scalar type">;

@@ -25,11 +25,11 @@ def target_feature : Separate<["-"], "target-feature">,
   HelpText<"Target specific attributes">;
 def triple : Separate<["-"], "triple">,
   HelpText<"Specify target triple (e.g. i686-apple-darwin9)">;
+def target_abi : Separate<["-"], "target-abi">,
+  HelpText<"Target a particular ABI type">;
 
 }
 
-def target_abi : Separate<["-"], "target-abi">,
-  HelpText<"Target a particular ABI type">;
 def target_linker_version : Separate<["-"], "target-linker-version">,
   HelpText<"Target linker version">;
 def triple_EQ : Joined<["-"], "triple=">, Alias<triple>;
@@ -342,6 +342,9 @@ def fmodule_implementation_of : Separate<["-"], "fmodule-implementation-of">,
 def fmodule_map_file_home_is_cwd : Flag<["-"], "fmodule-map-file-home-is-cwd">,
   HelpText<"Use the current working directory as the home directory of "
            "module maps specified by -fmodule-map-file=<FILE>">;
+def fmodule_feature : Separate<["-"], "fmodule-feature">,
+  MetaVarName<"<feature>">,
+  HelpText<"Enable <feature> in module map requires declarations">;
 
 let Group = Action_Group in {
 
@@ -515,6 +518,10 @@ def fno_deprecated_macro : Flag<["-"], "fno-deprecated-macro">,
   HelpText<"Undefines the __DEPRECATED macro">;
 def fsized_deallocation : Flag<["-"], "fsized-deallocation">,
   HelpText<"Enable C++14 sized global deallocation functions">;
+def fno_sized_deallocation: Flag<["-"], "fno-sized-deallocation">,
+  HelpText<"Disable sized deallocation functions">;
+def fdefine_sized_deallocation: Flag<["-"], "fdefine-sized-deallocation">,
+  HelpText<"Allow compiler-generated definition of sized deallocation functions">;
 def fobjc_subscripting_legacy_runtime : Flag<["-"], "fobjc-subscripting-legacy-runtime">,
   HelpText<"Allow Objective-C array and dictionary subscripting in legacy runtime">;
 def vtordisp_mode_EQ : Joined<["-"], "vtordisp-mode=">,
@@ -574,6 +581,8 @@ def detailed_preprocessing_record : Flag<["-"], "detailed-preprocessing-record">
 
 def cl_opt_disable : Flag<["-"], "cl-opt-disable">,
   HelpText<"OpenCL only. This option disables all optimizations. The default is optimizations are enabled.">;
+def cl_strict_aliasing : Flag<["-"], "cl-strict-aliasing">,
+  HelpText<"OpenCL only. This option does nothing and is for compatibility with OpenCL 1.0">;
 def cl_single_precision_constant : Flag<["-"], "cl-single-precision-constant">,
   HelpText<"OpenCL only. Treat double precision floating-point constant as single precision constant.">;
 def cl_finite_math_only : Flag<["-"], "cl-finite-math-only">,
@@ -599,6 +608,9 @@ def cl_denorms_are_zero : Flag<["-"], "cl-denorms-are-zero">,
 
 def fcuda_is_device : Flag<["-"], "fcuda-is-device">,
   HelpText<"Generate code for CUDA device">;
+def fcuda_allow_host_calls_from_host_device : Flag<["-"],
+    "fcuda-allow-host-calls-from-host-device">,
+  HelpText<"Allow host device functions to call host functions">;
 
 } // let Flags = [CC1Option]
 

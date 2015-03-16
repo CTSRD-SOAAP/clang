@@ -102,7 +102,7 @@ Sema::Sema(Preprocessor &pp, ASTContext &ctxt, ASTConsumer &consumer,
     AccessCheckingSFINAE(false), InNonInstantiationSFINAEContext(false),
     NonInstantiationEntries(0), ArgumentPackSubstitutionIndex(-1),
     CurrentInstantiationScope(nullptr), DisableTypoCorrection(false),
-    TyposCorrected(0), AnalysisWarnings(*this),
+    TyposCorrected(0), AnalysisWarnings(*this), ThreadSafetyDeclCache(nullptr),
     VarDataSharingAttributesStack(nullptr), CurScope(nullptr),
     Ident_super(nullptr), Ident___float128(nullptr)
 {
@@ -122,9 +122,7 @@ Sema::Sema(Preprocessor &pp, ASTContext &ctxt, ASTConsumer &consumer,
   PP.getDiagnostics().SetArgToStringFn(&FormatASTNodeDiagnosticArgument,
                                        &Context);
 
-  ExprEvalContexts.push_back(
-        ExpressionEvaluationContextRecord(PotentiallyEvaluated, 0,
-                                          false, nullptr, false));
+  ExprEvalContexts.emplace_back(PotentiallyEvaluated, 0, false, nullptr, false);
 
   FunctionScopes.push_back(new FunctionScopeInfo(Diags));
 
@@ -195,8 +193,9 @@ void Sema::Initialize() {
   }
 
   // Initialize Microsoft "predefined C++ types".
-  if (PP.getLangOpts().MSVCCompat && PP.getLangOpts().CPlusPlus) {
-    if (IdResolver.begin(&Context.Idents.get("type_info")) == IdResolver.end())
+  if (PP.getLangOpts().MSVCCompat) {
+    if (PP.getLangOpts().CPlusPlus &&
+        IdResolver.begin(&Context.Idents.get("type_info")) == IdResolver.end())
       PushOnScopeChains(Context.buildImplicitRecord("type_info", TTK_Class),
                         TUScope);
 
@@ -242,6 +241,8 @@ Sema::~Sema() {
   // If Sema's ExternalSource is the multiplexer - we own it.
   if (isMultiplexExternalSource)
     delete ExternalSource;
+
+  threadSafety::threadSafetyCleanup(ThreadSafetyDeclCache);
 
   // Destroys data sharing attributes stack for OpenMP
   DestroyDataSharingAttributesStack();
@@ -620,22 +621,6 @@ void Sema::ActOnEndOfTranslationUnit() {
   if (TUKind != TU_Prefix) {
     DiagnoseUseOfUnimplementedSelectors();
 
-    // If any dynamic classes have their key function defined within
-    // this translation unit, then those vtables are considered "used" and must
-    // be emitted.
-    for (DynamicClassesType::iterator I = DynamicClasses.begin(ExternalSource),
-                                      E = DynamicClasses.end();
-         I != E; ++I) {
-      assert(!(*I)->isDependentType() &&
-             "Should not see dependent types here!");
-      if (const CXXMethodDecl *KeyFunction =
-              Context.getCurrentKeyFunction(*I)) {
-        const FunctionDecl *Definition = nullptr;
-        if (KeyFunction->hasBody(Definition))
-          MarkVTableUsed(Definition->getLocation(), *I, true);
-      }
-    }
-
     // If DefinedUsedVTables ends up marking any virtual member functions it
     // might lead to more pending template instantiations, which we then need
     // to instantiate.
@@ -667,6 +652,8 @@ void Sema::ActOnEndOfTranslationUnit() {
 
   // All delayed member exception specs should be checked or we end up accepting
   // incompatible declarations.
+  // FIXME: This is wrong for TUKind == TU_Prefix. In that case, we need to
+  // write out the lists to the AST file (if any).
   assert(DelayedDefaultedMemberExceptionSpecs.empty());
   assert(DelayedExceptionSpecChecks.empty());
 

@@ -286,6 +286,16 @@ StandardConversionSequence::getNarrowingKind(ASTContext &Ctx,
   QualType FromType = getToType(0);
   QualType ToType = getToType(1);
   switch (Second) {
+  // 'bool' is an integral type; dispatch to the right place to handle it.
+  case ICK_Boolean_Conversion:
+    if (FromType->isRealFloatingType())
+      goto FloatingIntegralConversion;
+    if (FromType->isIntegralOrUnscopedEnumerationType())
+      goto IntegralConversion;
+    // Boolean conversions can be from pointers and pointers to members
+    // [conv.bool], and those aren't considered narrowing conversions.
+    return NK_Not_Narrowing;
+
   // -- from a floating-point type to an integer type, or
   //
   // -- from an integer type or unscoped enumeration type to a floating-point
@@ -293,6 +303,7 @@ StandardConversionSequence::getNarrowingKind(ASTContext &Ctx,
   //    value after conversion will fit into the target type and will produce
   //    the original value when converted back to the original type, or
   case ICK_Floating_Integral:
+  FloatingIntegralConversion:
     if (FromType->isRealFloatingType() && ToType->isIntegralType(Ctx)) {
       return NK_Type_Narrowing;
     } else if (FromType->isIntegralType(Ctx) && ToType->isRealFloatingType()) {
@@ -357,13 +368,8 @@ StandardConversionSequence::getNarrowingKind(ASTContext &Ctx,
   //    the source is a constant expression and the actual value after
   //    conversion will fit into the target type and will produce the original
   //    value when converted back to the original type.
-  case ICK_Boolean_Conversion:  // Bools are integers too.
-    if (!FromType->isIntegralOrUnscopedEnumerationType()) {
-      // Boolean conversions can be from pointers and pointers to members
-      // [conv.bool], and those aren't considered narrowing conversions.
-      return NK_Not_Narrowing;
-    }  // Otherwise, fall through to the integral case.
-  case ICK_Integral_Conversion: {
+  case ICK_Integral_Conversion:
+  IntegralConversion: {
     assert(FromType->isIntegralOrUnscopedEnumerationType());
     assert(ToType->isIntegralOrUnscopedEnumerationType());
     const bool FromSigned = FromType->isSignedIntegerOrEnumerationType();
@@ -3099,11 +3105,8 @@ IsUserDefinedConversion(Sema &S, Expr *From, QualType ToType,
     if (CXXRecordDecl *FromRecordDecl
          = dyn_cast<CXXRecordDecl>(FromRecordType->getDecl())) {
       // Add all of the conversion functions as candidates.
-      std::pair<CXXRecordDecl::conversion_iterator,
-                CXXRecordDecl::conversion_iterator>
-        Conversions = FromRecordDecl->getVisibleConversionFunctions();
-      for (CXXRecordDecl::conversion_iterator
-             I = Conversions.first, E = Conversions.second; I != E; ++I) {
+      const auto &Conversions = FromRecordDecl->getVisibleConversionFunctions();
+      for (auto I = Conversions.begin(), E = Conversions.end(); I != E; ++I) {
         DeclAccessPair FoundDecl = I.getPair();
         NamedDecl *D = FoundDecl.getDecl();
         CXXRecordDecl *ActingContext = cast<CXXRecordDecl>(D->getDeclContext());
@@ -3339,7 +3342,7 @@ CompareImplicitConversionSequences(Sema &S,
   // list-initialization sequence L2 if:
   // - L1 converts to std::initializer_list<X> for some X and L2 does not, or,
   //   if not that,
-  // - L1 converts to type “array of N1 T”, L2 converts to type “array of N2 T”,
+  // - L1 converts to type "array of N1 T", L2 converts to type "array of N2 T",
   //   and N1 is smaller than N2.,
   // even if one of the other rules in this paragraph would otherwise apply.
   if (!ICS1.isBad()) {
@@ -4045,11 +4048,8 @@ FindConversionForRefInit(Sema &S, ImplicitConversionSequence &ICS,
     = dyn_cast<CXXRecordDecl>(T2->getAs<RecordType>()->getDecl());
 
   OverloadCandidateSet CandidateSet(DeclLoc, OverloadCandidateSet::CSK_Normal);
-  std::pair<CXXRecordDecl::conversion_iterator,
-            CXXRecordDecl::conversion_iterator>
-    Conversions = T2RecordDecl->getVisibleConversionFunctions();
-  for (CXXRecordDecl::conversion_iterator
-         I = Conversions.first, E = Conversions.second; I != E; ++I) {
+  const auto &Conversions = T2RecordDecl->getVisibleConversionFunctions();
+  for (auto I = Conversions.begin(), E = Conversions.end(); I != E; ++I) {
     NamedDecl *D = *I;
     CXXRecordDecl *ActingDC = cast<CXXRecordDecl>(D->getDeclContext());
     if (isa<UsingShadowDecl>(D))
@@ -4501,7 +4501,7 @@ TryListConversion(Sema &S, InitListExpr *From, QualType ToType,
   //   element of the list to X.
   //
   // C++14 [over.ics.list]p3:
-  //   Otherwise, if the parameter type is “array of N X”, if the initializer
+  //   Otherwise, if the parameter type is "array of N X", if the initializer
   //   list has exactly N elements or if it has fewer than N elements and X is
   //   default-constructible, and if all the elements of the initializer list
   //   can be implicitly converted to X, the implicit conversion sequence is
@@ -5399,21 +5399,18 @@ ExprResult Sema::PerformContextualImplicitConversion(
   UnresolvedSet<4>
       ViableConversions; // These are *potentially* viable in C++1y.
   UnresolvedSet<4> ExplicitConversions;
-  std::pair<CXXRecordDecl::conversion_iterator,
-            CXXRecordDecl::conversion_iterator> Conversions =
+  const auto &Conversions =
       cast<CXXRecordDecl>(RecordTy->getDecl())->getVisibleConversionFunctions();
 
   bool HadMultipleCandidates =
-      (std::distance(Conversions.first, Conversions.second) > 1);
+      (std::distance(Conversions.begin(), Conversions.end()) > 1);
 
   // To check that there is only one target type, in C++1y:
   QualType ToType;
   bool HasUniqueTargetType = true;
 
   // Collect explicit or viable (potentially in C++1y) conversions.
-  for (CXXRecordDecl::conversion_iterator I = Conversions.first,
-                                          E = Conversions.second;
-       I != E; ++I) {
+  for (auto I = Conversions.begin(), E = Conversions.end(); I != E; ++I) {
     NamedDecl *D = (*I)->getUnderlyingDecl();
     CXXConversionDecl *Conversion;
     FunctionTemplateDecl *ConvTemplate = dyn_cast<FunctionTemplateDecl>(D);
@@ -6944,12 +6941,7 @@ BuiltinCandidateTypeSet::AddTypesConvertedFrom(QualType Ty,
       return;
 
     CXXRecordDecl *ClassDecl = cast<CXXRecordDecl>(TyRec->getDecl());
-    std::pair<CXXRecordDecl::conversion_iterator,
-              CXXRecordDecl::conversion_iterator>
-      Conversions = ClassDecl->getVisibleConversionFunctions();
-    for (CXXRecordDecl::conversion_iterator
-           I = Conversions.first, E = Conversions.second; I != E; ++I) {
-      NamedDecl *D = I.getDecl();
+    for (NamedDecl *D : ClassDecl->getVisibleConversionFunctions()) {
       if (isa<UsingShadowDecl>(D))
         D = cast<UsingShadowDecl>(D)->getTargetDecl();
 
@@ -7013,13 +7005,7 @@ static  Qualifiers CollectVRQualifiers(ASTContext &Context, Expr* ArgExpr) {
     if (!ClassDecl->hasDefinition())
       return VRQuals;
 
-    std::pair<CXXRecordDecl::conversion_iterator,
-              CXXRecordDecl::conversion_iterator>
-      Conversions = ClassDecl->getVisibleConversionFunctions();
-
-    for (CXXRecordDecl::conversion_iterator
-           I = Conversions.first, E = Conversions.second; I != E; ++I) {
-      NamedDecl *D = I.getDecl();
+    for (NamedDecl *D : ClassDecl->getVisibleConversionFunctions()) {
       if (isa<UsingShadowDecl>(D))
         D = cast<UsingShadowDecl>(D)->getTargetDecl();
       if (CXXConversionDecl *Conv = dyn_cast<CXXConversionDecl>(D)) {
@@ -8138,7 +8124,7 @@ void Sema::AddBuiltinOperatorCandidates(OverloadedOperatorKind Op,
   bool HasArithmeticOrEnumeralCandidateType = false;
   SmallVector<BuiltinCandidateTypeSet, 2> CandidateTypes;
   for (unsigned ArgIdx = 0, N = Args.size(); ArgIdx != N; ++ArgIdx) {
-    CandidateTypes.push_back(BuiltinCandidateTypeSet(*this));
+    CandidateTypes.emplace_back(*this);
     CandidateTypes[ArgIdx].AddTypesConvertedFrom(Args[ArgIdx]->getType(),
                                                  OpLoc,
                                                  true,
@@ -9511,10 +9497,7 @@ struct CompareOverloadCandidatesForDisplay {
         numLFixes = (numLFixes == 0) ? UINT_MAX : numLFixes;
         numRFixes = (numRFixes == 0) ? UINT_MAX : numRFixes;
         if (numLFixes != numRFixes) {
-          if (numLFixes < numRFixes)
-            return true;
-          else
-            return false;
+          return numLFixes < numRFixes;
         }
 
         // If there's any ordering between the defined conversions...
@@ -11609,6 +11592,10 @@ Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
     return MaybeBindToTemporary(call);
   }
 
+  if (isa<CXXPseudoDestructorExpr>(NakedMemExpr))
+    return new (Context)
+        CallExpr(Context, MemExprE, Args, Context.VoidTy, VK_RValue, RParenLoc);
+
   UnbridgedCastsSet UnbridgedCasts;
   if (checkArgPlaceholdersForOverload(*this, Args, UnbridgedCasts))
     return ExprError();
@@ -11868,11 +11855,9 @@ Sema::BuildCallToObjectOfClassType(Scope *S, Expr *Obj,
   //   functions for each conversion function declared in an
   //   accessible base class provided the function is not hidden
   //   within T by another intervening declaration.
-  std::pair<CXXRecordDecl::conversion_iterator,
-            CXXRecordDecl::conversion_iterator> Conversions
-    = cast<CXXRecordDecl>(Record->getDecl())->getVisibleConversionFunctions();
-  for (CXXRecordDecl::conversion_iterator
-         I = Conversions.first, E = Conversions.second; I != E; ++I) {
+  const auto &Conversions =
+      cast<CXXRecordDecl>(Record->getDecl())->getVisibleConversionFunctions();
+  for (auto I = Conversions.begin(), E = Conversions.end(); I != E; ++I) {
     NamedDecl *D = *I;
     CXXRecordDecl *ActingContext = cast<CXXRecordDecl>(D->getDeclContext());
     if (isa<UsingShadowDecl>(D))

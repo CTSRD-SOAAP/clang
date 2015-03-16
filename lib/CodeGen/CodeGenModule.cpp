@@ -64,6 +64,7 @@ static CGCXXABI *createCXXABI(CodeGenModule &CGM) {
   case TargetCXXABI::GenericARM:
   case TargetCXXABI::iOS:
   case TargetCXXABI::iOS64:
+  case TargetCXXABI::GenericMIPS:
   case TargetCXXABI::GenericItanium:
     return CreateItaniumCXXABI(CGM);
   case TargetCXXABI::Microsoft:
@@ -140,12 +141,14 @@ CodeGenModule::CodeGenModule(ASTContext &C, const CodeGenOptions &CGO,
   RRData = new RREntrypoints();
 
   if (!CodeGenOpts.InstrProfileInput.empty()) {
-    if (std::error_code EC = llvm::IndexedInstrProfReader::create(
-            CodeGenOpts.InstrProfileInput, PGOReader)) {
+    auto ReaderOrErr =
+        llvm::IndexedInstrProfReader::create(CodeGenOpts.InstrProfileInput);
+    if (std::error_code EC = ReaderOrErr.getError()) {
       unsigned DiagID = Diags.getCustomDiagID(DiagnosticsEngine::Error,
                                               "Could not read profile: %0");
       getDiags().Report(DiagID) << EC.message();
     }
+    PGOReader = std::move(ReaderOrErr.get());
   }
 
   // If coverage mapping generation is enabled, create the
@@ -935,8 +938,8 @@ static void emitUsed(CodeGenModule &CGM, StringRef Name,
   UsedArray.resize(List.size());
   for (unsigned i = 0, e = List.size(); i != e; ++i) {
     UsedArray[i] =
-     llvm::ConstantExpr::getBitCast(cast<llvm::Constant>(&*List[i]),
-                                    CGM.Int8PtrTy);
+        llvm::ConstantExpr::getPointerBitCastOrAddrSpaceCast(
+            cast<llvm::Constant>(&*List[i]), CGM.Int8PtrTy);
   }
 
   if (UsedArray.empty())
@@ -1615,12 +1618,15 @@ CodeGenModule::GetOrCreateLLVMFunction(StringRef MangledName,
       // don't need it anymore).
       addDeferredDeclToEmit(F, DDI->second);
       DeferredDecls.erase(DDI);
-
+      
       // Otherwise, if this is a sized deallocation function, emit a weak
-      // definition
-      // for it at the end of the translation unit.
-    } else if (D && cast<FunctionDecl>(D)
-                        ->getCorrespondingUnsizedGlobalDeallocationFunction()) {
+      // definition for it at the end of the translation unit (if allowed),
+      // unless the sized deallocation function is aliased.
+    } else if (D &&
+               cast<FunctionDecl>(D)
+                  ->getCorrespondingUnsizedGlobalDeallocationFunction() &&
+               getLangOpts().DefineSizedDeallocation &&
+               !D->hasAttr<AliasAttr>()) {
       addDeferredDeclToEmit(F, GD);
 
       // Otherwise, there are cases we have to worry about where we're
@@ -2162,9 +2168,25 @@ static bool isVarDeclStrongDefinition(const ASTContext &Context,
 
   // Declarations with a required alignment do not have common linakge in MSVC
   // mode.
-  if (Context.getLangOpts().MSVCCompat &&
-      (Context.isAlignmentRequired(D->getType()) || D->hasAttr<AlignedAttr>()))
-    return true;
+  if (Context.getLangOpts().MSVCCompat) {
+    if (D->hasAttr<AlignedAttr>())
+      return true;
+    QualType VarType = D->getType();
+    if (Context.isAlignmentRequired(VarType))
+      return true;
+
+    if (const auto *RT = VarType->getAs<RecordType>()) {
+      const RecordDecl *RD = RT->getDecl();
+      for (const FieldDecl *FD : RD->fields()) {
+        if (FD->isBitField())
+          continue;
+        if (FD->hasAttr<AlignedAttr>())
+          return true;
+        if (Context.isAlignmentRequired(FD->getType()))
+          return true;
+      }
+    }
+  }
 
   return false;
 }
@@ -3060,10 +3082,19 @@ llvm::Constant *CodeGenModule::GetAddrOfGlobalTemporary(
   // Create a global variable for this lifetime-extended temporary.
   llvm::GlobalValue::LinkageTypes Linkage =
       getLLVMLinkageVarDefinition(VD, Constant);
-  // There is no need for this temporary to have global linkage if the global
-  // variable has external linkage.
-  if (Linkage == llvm::GlobalVariable::ExternalLinkage)
-    Linkage = llvm::GlobalVariable::PrivateLinkage;
+  if (Linkage == llvm::GlobalVariable::ExternalLinkage) {
+    const VarDecl *InitVD;
+    if (VD->isStaticDataMember() && VD->getAnyInitializer(InitVD) &&
+        isa<CXXRecordDecl>(InitVD->getLexicalDeclContext())) {
+      // Temporaries defined inside a class get linkonce_odr linkage because the
+      // class can be defined in multipe translation units.
+      Linkage = llvm::GlobalVariable::LinkOnceODRLinkage;
+    } else {
+      // There is no need for this temporary to have external linkage if the
+      // VarDecl has external linkage.
+      Linkage = llvm::GlobalVariable::InternalLinkage;
+    }
+  }
   unsigned AddrSpace = GetGlobalVarAddressSpace(
       VD, getContext().getTargetAddressSpace(MaterializedType));
   auto *GV = new llvm::GlobalVariable(
@@ -3073,6 +3104,8 @@ llvm::Constant *CodeGenModule::GetAddrOfGlobalTemporary(
   setGlobalVisibility(GV, VD);
   GV->setAlignment(
       getContext().getTypeAlignInChars(MaterializedType).getQuantity());
+  if (supportsCOMDAT() && GV->isWeakForLinker())
+    GV->setComdat(TheModule.getOrInsertComdat(GV->getName()));
   if (VD->getTLSKind())
     setTLSMode(GV, *VD);
   Slot = GV;
@@ -3327,15 +3360,7 @@ void CodeGenModule::EmitTopLevelDecl(Decl *D) {
 
   case Decl::FileScopeAsm: {
     auto *AD = cast<FileScopeAsmDecl>(D);
-    StringRef AsmString = AD->getAsmString()->getString();
-
-    const std::string &S = getModule().getModuleInlineAsm();
-    if (S.empty())
-      getModule().setModuleInlineAsm(AsmString);
-    else if (S.end()[-1] == '\n')
-      getModule().setModuleInlineAsm(S + AsmString.str());
-    else
-      getModule().setModuleInlineAsm(S + '\n' + AsmString.str());
+    getModule().appendModuleInlineAsm(AD->getAsmString()->getString());
     break;
   }
 
@@ -3631,7 +3656,7 @@ llvm::Constant *CodeGenModule::GetAddrOfRTTIDescriptor(QualType Ty,
       LangOpts.ObjCRuntime.isGNUFamily())
     return ObjCRuntime->GetEHType(Ty);
 
-  return getCXXABI().getAddrOfRTTIDescriptor(Ty);
+  return getCXXABI().getAddrOfRTTIDescriptor(Ty, ForEH);
 }
 
 void CodeGenModule::EmitOMPThreadPrivateDecl(const OMPThreadPrivateDecl *D) {
@@ -3641,10 +3666,8 @@ void CodeGenModule::EmitOMPThreadPrivateDecl(const OMPThreadPrivateDecl *D) {
         VD->getAnyInitializer() &&
         !VD->getAnyInitializer()->isConstantInitializer(getContext(),
                                                         /*ForRef=*/false);
-    if (auto InitFunction =
-            getOpenMPRuntime().EmitOMPThreadPrivateVarDefinition(
-                VD, GetAddrOfGlobalVar(VD), RefExpr->getLocStart(),
-                PerformInit))
+    if (auto InitFunction = getOpenMPRuntime().emitThreadPrivateVarDefinition(
+            VD, GetAddrOfGlobalVar(VD), RefExpr->getLocStart(), PerformInit))
       CXXGlobalInits.push_back(InitFunction);
   }
 }

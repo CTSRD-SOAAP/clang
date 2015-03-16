@@ -477,6 +477,9 @@ private:
   void WriteTypeAbbrevs();
   void WriteType(QualType T);
 
+  template<typename Visitor>
+  void visitLocalLookupResults(const DeclContext *DC, Visitor AddLookupResult);
+
   uint32_t GenerateNameLookupTable(const DeclContext *DC,
                                    llvm::SmallVectorImpl<char> &LookupTable);
   uint64_t WriteDeclContextLexicalBlock(ASTContext &Context, DeclContext *DC);
@@ -496,7 +499,6 @@ private:
   void WriteOpenCLExtensions(Sema &SemaRef);
   void WriteObjCCategories();
   void WriteRedeclarations();
-  void WriteMergedDecls();
   void WriteLateParsedTemplates(Sema &SemaRef);
   void WriteOptimizePragmaOptions(Sema &SemaRef);
 
@@ -530,6 +532,8 @@ public:
   /// the given bitstream.
   ASTWriter(llvm::BitstreamWriter &Stream);
   ~ASTWriter();
+
+  const LangOptions &getLangOpts() const;
 
   /// \brief Write a precompiled header for the given semantic analysis.
   ///
@@ -802,6 +806,8 @@ public:
                                       const FunctionDecl *D) override;
   void ResolvedExceptionSpec(const FunctionDecl *FD) override;
   void DeducedReturnType(const FunctionDecl *FD, QualType ReturnType) override;
+  void ResolvedOperatorDelete(const CXXDestructorDecl *DD,
+                              const FunctionDecl *Delete) override;
   void CompletedImplicitDefinition(const FunctionDecl *D) override;
   void StaticDataMemberInstantiated(const VarDecl *D) override;
   void FunctionDefinitionInstantiated(const FunctionDecl *D) override;

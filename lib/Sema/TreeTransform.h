@@ -1702,7 +1702,7 @@ public:
   }
 
   StmtResult RebuildSEHFinallyStmt(SourceLocation Loc, Stmt *Block) {
-    return getSema().ActOnSEHFinallyBlock(Loc, Block);
+    return SEHFinallyStmt::Create(getSema().getASTContext(), Loc, Block);
   }
 
   /// \brief Build a new predefined expression.
@@ -7834,6 +7834,9 @@ TreeTransform<Derived>::TransformExtVectorElementExpr(ExtVectorElementExpr *E) {
 template<typename Derived>
 ExprResult
 TreeTransform<Derived>::TransformInitListExpr(InitListExpr *E) {
+  if (InitListExpr *Syntactic = E->getSyntacticForm())
+    E = Syntactic;
+
   bool InitChanged = false;
 
   SmallVector<Expr*, 4> Inits;
@@ -7841,8 +7844,12 @@ TreeTransform<Derived>::TransformInitListExpr(InitListExpr *E) {
                                   Inits, &InitChanged))
     return ExprError();
 
-  if (!getDerived().AlwaysRebuild() && !InitChanged)
-    return E;
+  if (!getDerived().AlwaysRebuild() && !InitChanged) {
+    // FIXME: Attempt to reuse the existing syntactic form of the InitListExpr
+    // in some cases. We can't reuse it in general, because the syntactic and
+    // semantic forms are linked, and we can't know that semantic form will
+    // match even if the syntactic form does.
+  }
 
   return getDerived().RebuildInitList(E->getLBraceLoc(), Inits,
                                       E->getRBraceLoc(), E->getType());
@@ -10720,11 +10727,9 @@ TreeTransform<Derived>::RebuildCXXPseudoDestructorExpr(Expr *Base,
        !BaseType->getAs<PointerType>()->getPointeeType()
                                               ->template getAs<RecordType>())){
     // This pseudo-destructor expression is still a pseudo-destructor.
-    return SemaRef.BuildPseudoDestructorExpr(Base, OperatorLoc,
-                                             isArrow? tok::arrow : tok::period,
-                                             SS, ScopeType, CCLoc, TildeLoc,
-                                             Destroyed,
-                                             /*FIXME?*/true);
+    return SemaRef.BuildPseudoDestructorExpr(
+        Base, OperatorLoc, isArrow ? tok::arrow : tok::period, SS, ScopeType,
+        CCLoc, TildeLoc, Destroyed);
   }
 
   TypeSourceInfo *DestroyedType = Destroyed.getTypeSourceInfo();

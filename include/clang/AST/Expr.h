@@ -1239,8 +1239,8 @@ class APNumericStorage {
 
   bool hasAllocation() const { return llvm::APInt::getNumWords(BitWidth) > 1; }
 
-  APNumericStorage(const APNumericStorage &) LLVM_DELETED_FUNCTION;
-  void operator=(const APNumericStorage &) LLVM_DELETED_FUNCTION;
+  APNumericStorage(const APNumericStorage &) = delete;
+  void operator=(const APNumericStorage &) = delete;
 
 protected:
   APNumericStorage() : VAL(0), BitWidth(0) { }
@@ -2276,7 +2276,7 @@ public:
   /// getCallReturnType - Get the return type of the call expr. This is not
   /// always the type of the expr itself, if the return type is a reference
   /// type.
-  QualType getCallReturnType() const;
+  QualType getCallReturnType(const ASTContext &Ctx) const;
 
   SourceLocation getRParenLoc() const { return RParenLoc; }
   void setRParenLoc(SourceLocation L) { RParenLoc = L; }

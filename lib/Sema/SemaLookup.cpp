@@ -194,10 +194,11 @@ namespace {
     const_iterator begin() const { return list.begin(); }
     const_iterator end() const { return list.end(); }
 
-    std::pair<const_iterator,const_iterator>
+    llvm::iterator_range<const_iterator>
     getNamespacesFor(DeclContext *DC) const {
-      return std::equal_range(begin(), end(), DC->getPrimaryContext(),
-                              UnqualUsingEntry::Comparator());
+      return llvm::make_range(std::equal_range(begin(), end(),
+                                               DC->getPrimaryContext(),
+                                               UnqualUsingEntry::Comparator()));
     }
   };
 }
@@ -413,6 +414,10 @@ void LookupResult::resolveKind() {
     if (!Unique.insert(D).second) {
       // If it's not unique, pull something off the back (and
       // continue at this index).
+      // FIXME: This is wrong. We need to take the more recent declaration in
+      // order to get the right type, default arguments, etc. We also need to
+      // prefer visible declarations to hidden ones (for redeclaration lookup
+      // in modules builds).
       Decls[I] = Decls[--N];
       continue;
     }
@@ -670,8 +675,8 @@ static bool LookupDirect(Sema &S, LookupResult &R, const DeclContext *DC) {
     DeclareImplicitMemberFunctionsWithName(S, R.getLookupName(), DC);
 
   // Perform lookup into this declaration context.
-  DeclContext::lookup_const_result DR = DC->lookup(R.getLookupName());
-  for (DeclContext::lookup_const_iterator I = DR.begin(), E = DR.end(); I != E;
+  DeclContext::lookup_result DR = DC->lookup(R.getLookupName());
+  for (DeclContext::lookup_iterator I = DR.begin(), E = DR.end(); I != E;
        ++I) {
     NamedDecl *D = *I;
     if ((D = R.getAcceptableDecl(D))) {
@@ -765,11 +770,8 @@ CppNamespaceLookup(Sema &S, LookupResult &R, ASTContext &Context,
 
   // Perform direct name lookup into the namespaces nominated by the
   // using directives whose common ancestor is this namespace.
-  UnqualUsingDirectiveSet::const_iterator UI, UEnd;
-  std::tie(UI, UEnd) = UDirs.getNamespacesFor(NS);
-
-  for (; UI != UEnd; ++UI)
-    if (LookupDirect(S, R, UI->getNominatedNamespace()))
+  for (const UnqualUsingEntry &UUE : UDirs.getNamespacesFor(NS))
+    if (LookupDirect(S, R, UUE.getNominatedNamespace()))
       Found = true;
 
   R.resolveKind();
@@ -1256,6 +1258,9 @@ static NamedDecl *findAcceptableDecl(Sema &SemaRef, NamedDecl *D) {
 
   for (auto RD : D->redecls()) {
     if (auto ND = dyn_cast<NamedDecl>(RD)) {
+      // FIXME: This is wrong in the case where the previous declaration is not
+      // visible in the same scope as D. This needs to be done much more
+      // carefully.
       if (LookupResult::isVisible(SemaRef, ND))
         return ND;
     }
@@ -2500,8 +2505,18 @@ Sema::SpecialMemberOverloadResult *Sema::LookupSpecialMember(CXXRecordDecl *RD,
   // will always be a (possibly implicit) declaration to shadow any others.
   OverloadCandidateSet OCS(RD->getLocation(), OverloadCandidateSet::CSK_Normal);
   DeclContext::lookup_result R = RD->lookup(Name);
-  assert(!R.empty() &&
-         "lookup for a constructor or assignment operator was empty");
+
+  if (R.empty()) {
+    // We might have no default constructor because we have a lambda's closure
+    // type, rather than because there's some other declared constructor.
+    // Every class has a copy/move constructor, copy/move assignment, and
+    // destructor.
+    assert(SM == CXXDefaultConstructor &&
+           "lookup for a constructor or assignment operator was empty");
+    Result->setMethod(nullptr);
+    Result->setKind(SpecialMemberOverloadResult::NoMemberOrDeleted);
+    return Result;
+  }
 
   // Copy the candidates as our processing of them may load new declarations
   // from an external source and invalidate lookup_result.
@@ -3199,10 +3214,8 @@ static void LookupVisibleDecls(Scope *S, LookupResult &Result,
   if (Entity) {
     // Lookup visible declarations in any namespaces found by using
     // directives.
-    UnqualUsingDirectiveSet::const_iterator UI, UEnd;
-    std::tie(UI, UEnd) = UDirs.getNamespacesFor(Entity);
-    for (; UI != UEnd; ++UI)
-      LookupVisibleDecls(const_cast<DeclContext *>(UI->getNominatedNamespace()),
+    for (const UnqualUsingEntry &UUE : UDirs.getNamespacesFor(Entity))
+      LookupVisibleDecls(const_cast<DeclContext *>(UUE.getNominatedNamespace()),
                          Result, /*QualifiedNameLookup=*/false,
                          /*InBaseClass=*/false, Consumer, Visited);
   }
@@ -3672,8 +3685,7 @@ void TypoCorrectionConsumer::performQualifiedLookups() {
 
 TypoCorrectionConsumer::NamespaceSpecifierSet::NamespaceSpecifierSet(
     ASTContext &Context, DeclContext *CurContext, CXXScopeSpec *CurScopeSpec)
-    : Context(Context), CurContextChain(buildContextChain(CurContext)),
-      isSorted(false) {
+    : Context(Context), CurContextChain(buildContextChain(CurContext)) {
   if (NestedNameSpecifier *NNS =
           CurScopeSpec ? CurScopeSpec->getScopeRep() : nullptr) {
     llvm::raw_string_ostream SpecifierOStream(CurNameSpecifier);
@@ -3692,7 +3704,6 @@ TypoCorrectionConsumer::NamespaceSpecifierSet::NamespaceSpecifierSet(
   }
 
   // Add the global context as a NestedNameSpecifier
-  Distances.insert(1);
   SpecifierInfo SI = {cast<DeclContext>(Context.getTranslationUnitDecl()),
                       NestedNameSpecifier::GlobalSpecifier(Context), 1};
   DistanceMap[1].push_back(SI);
@@ -3710,22 +3721,6 @@ auto TypoCorrectionConsumer::NamespaceSpecifierSet::buildContextChain(
       Chain.push_back(DC->getPrimaryContext());
   }
   return Chain;
-}
-
-void TypoCorrectionConsumer::NamespaceSpecifierSet::sortNamespaces() {
-  SmallVector<unsigned, 4> sortedDistances;
-  sortedDistances.append(Distances.begin(), Distances.end());
-
-  if (sortedDistances.size() > 1)
-    std::sort(sortedDistances.begin(), sortedDistances.end());
-
-  Specifiers.clear();
-  for (auto D : sortedDistances) {
-    SpecifierInfoList &SpecList = DistanceMap[D];
-    Specifiers.append(SpecList.begin(), SpecList.end());
-  }
-
-  isSorted = true;
 }
 
 unsigned
@@ -3808,8 +3803,6 @@ void TypoCorrectionConsumer::NamespaceSpecifierSet::addNameSpecifier(
         llvm::makeArrayRef(NewNameSpecifierIdentifiers));
   }
 
-  isSorted = false;
-  Distances.insert(NumSpecifiers);
   SpecifierInfo SI = {Ctx, NNS, NumSpecifiers};
   DistanceMap[NumSpecifiers].push_back(SI);
 }

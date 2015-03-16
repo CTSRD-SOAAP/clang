@@ -89,7 +89,9 @@ ModuleMap::ModuleMap(SourceManager &SourceMgr, DiagnosticsEngine &Diags,
                      HeaderSearch &HeaderInfo)
     : SourceMgr(SourceMgr), Diags(Diags), LangOpts(LangOpts), Target(Target),
       HeaderInfo(HeaderInfo), BuiltinIncludeDir(nullptr),
-      CompilingModule(nullptr), SourceModule(nullptr) {}
+      CompilingModule(nullptr), SourceModule(nullptr) {
+  MMapLangOpts.LineComment = true;
+}
 
 ModuleMap::~ModuleMap() {
   for (llvm::StringMap<Module *>::iterator I = Modules.begin(), 
@@ -206,9 +208,11 @@ ModuleMap::findHeaderInUmbrellaDirs(const FileEntry *File,
 // Returns true if RequestingModule directly uses RequestedModule.
 static bool directlyUses(const Module *RequestingModule,
                          const Module *RequestedModule) {
-  return std::find(RequestingModule->DirectUses.begin(),
-                   RequestingModule->DirectUses.end(),
-                   RequestedModule) != RequestingModule->DirectUses.end();
+  for (const Module* DirectUse : RequestingModule->DirectUses) {
+    if (RequestedModule->isSubModuleOf(DirectUse))
+      return true;
+  }
+  return false;
 }
 
 static bool violatesPrivateInclude(Module *RequestingModule,
@@ -217,19 +221,21 @@ static bool violatesPrivateInclude(Module *RequestingModule,
                                    Module *RequestedModule) {
   bool IsPrivateRole = Role & ModuleMap::PrivateHeader;
 #ifndef NDEBUG
-  // Check for consistency between the module header role
-  // as obtained from the lookup and as obtained from the module.
-  // This check is not cheap, so enable it only for debugging.
-  bool IsPrivate = false;
-  SmallVectorImpl<Module::Header> *HeaderList[] =
-      {&RequestedModule->Headers[Module::HK_Private],
-       &RequestedModule->Headers[Module::HK_PrivateTextual]};
-  for (auto *Hdrs : HeaderList)
-    IsPrivate |=
-        std::find_if(Hdrs->begin(), Hdrs->end(), [&](const Module::Header &H) {
-          return H.Entry == IncFileEnt;
-        }) != Hdrs->end();
-  assert(IsPrivate == IsPrivateRole && "inconsistent headers and roles");
+  if (IsPrivateRole) {
+    // Check for consistency between the module header role
+    // as obtained from the lookup and as obtained from the module.
+    // This check is not cheap, so enable it only for debugging.
+    bool IsPrivate = false;
+    SmallVectorImpl<Module::Header> *HeaderList[] = {
+        &RequestedModule->Headers[Module::HK_Private],
+        &RequestedModule->Headers[Module::HK_PrivateTextual]};
+    for (auto *Hs : HeaderList)
+      IsPrivate |=
+          std::find_if(Hs->begin(), Hs->end(), [&](const Module::Header &H) {
+            return H.Entry == IncFileEnt;
+          }) != Hs->end();
+    assert((!IsPrivateRole || IsPrivate) && "inconsistent headers and roles");
+  }
 #endif
   return IsPrivateRole &&
          RequestedModule->getTopLevelModule() != RequestingModule;
@@ -259,7 +265,8 @@ void ModuleMap::diagnoseHeaderInclusion(Module *RequestingModule,
   if (Known != Headers.end()) {
     for (const KnownHeader &Header : Known->second) {
       // If 'File' is part of 'RequestingModule' we can definitely include it.
-      if (Header.getModule() == RequestingModule)
+      if (Header.getModule() &&
+          Header.getModule()->isSubModuleOf(RequestingModule))
         return;
 
       // Remember private headers for later printing of a diagnostic.
@@ -286,14 +293,14 @@ void ModuleMap::diagnoseHeaderInclusion(Module *RequestingModule,
 
   // We have found a header, but it is private.
   if (Private) {
-    Diags.Report(FilenameLoc, diag::error_use_of_private_header_outside_module)
+    Diags.Report(FilenameLoc, diag::warn_use_of_private_header_outside_module)
         << Filename;
     return;
   }
 
   // We have found a module, but we don't use it.
   if (NotUsed) {
-    Diags.Report(FilenameLoc, diag::error_undeclared_use_of_module)
+    Diags.Report(FilenameLoc, diag::err_undeclared_use_of_module)
         << RequestingModule->getFullModuleName() << Filename;
     return;
   }
@@ -304,7 +311,7 @@ void ModuleMap::diagnoseHeaderInclusion(Module *RequestingModule,
   // At this point, only non-modular includes remain.
 
   if (LangOpts.ModulesStrictDeclUse) {
-    Diags.Report(FilenameLoc, diag::error_undeclared_use_of_module)
+    Diags.Report(FilenameLoc, diag::err_undeclared_use_of_module)
         << RequestingModule->getFullModuleName() << Filename;
   } else if (RequestingModule) {
     diag::kind DiagID = RequestingModule->getTopLevelModule()->IsFramework ?
@@ -312,6 +319,22 @@ void ModuleMap::diagnoseHeaderInclusion(Module *RequestingModule,
         diag::warn_non_modular_include_in_module;
     Diags.Report(FilenameLoc, DiagID) << RequestingModule->getFullModuleName();
   }
+}
+
+static bool isBetterKnownHeader(const ModuleMap::KnownHeader &New,
+                                const ModuleMap::KnownHeader &Old) {
+  // Prefer a public header over a private header.
+  if ((New.getRole() & ModuleMap::PrivateHeader) !=
+      (Old.getRole() & ModuleMap::PrivateHeader))
+    return !(New.getRole() & ModuleMap::PrivateHeader);
+
+  // Prefer a non-textual header over a textual header.
+  if ((New.getRole() & ModuleMap::TextualHeader) !=
+      (Old.getRole() & ModuleMap::TextualHeader))
+    return !(New.getRole() & ModuleMap::TextualHeader);
+
+  // Don't have a reason to choose between these. Just keep the first one.
+  return false;
 }
 
 ModuleMap::KnownHeader
@@ -348,8 +371,7 @@ ModuleMap::findModuleForHeader(const FileEntry *File,
           !directlyUses(RequestingModule, I->getModule()))
         continue;
 
-      // Prefer a public header over a private header.
-      if (!Result || (Result.getRole() & ModuleMap::PrivateHeader))
+      if (!Result || isBetterKnownHeader(*I, Result))
         Result = *I;
     }
     return MakeResult(Result);

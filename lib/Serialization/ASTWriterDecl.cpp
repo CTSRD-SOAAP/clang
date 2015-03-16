@@ -138,6 +138,58 @@ namespace clang {
                                       CD->NumCtorInitializers, Record);
       Writer.AddStmt(FD->getBody());
     }
+
+    /// Get the specialization decl from an entry in the specialization list.
+    template <typename EntryType>
+    typename RedeclarableTemplateDecl::SpecEntryTraits<EntryType>::DeclType *
+    getSpecializationDecl(EntryType &T) {
+      return RedeclarableTemplateDecl::SpecEntryTraits<EntryType>::getDecl(&T);
+    }
+
+    /// Get the list of partial specializations from a template's common ptr.
+    template<typename T>
+    decltype(T::PartialSpecializations) &getPartialSpecializations(T *Common) {
+      return Common->PartialSpecializations;
+    }
+    ArrayRef<Decl> getPartialSpecializations(FunctionTemplateDecl::Common *) {
+      return None;
+    }
+
+    template<typename Decl>
+    void AddTemplateSpecializations(Decl *D) {
+      auto *Common = D->getCommonPtr();
+
+      // If we have any lazy specializations, and the external AST source is
+      // our chained AST reader, we can just write out the DeclIDs. Otherwise,
+      // we need to resolve them to actual declarations.
+      if (Writer.Chain != Writer.Context->getExternalSource() &&
+          Common->LazySpecializations) {
+        D->LoadLazySpecializations();
+        assert(!Common->LazySpecializations);
+      }
+
+      auto &Specializations = Common->Specializations;
+      auto &&PartialSpecializations = getPartialSpecializations(Common);
+      ArrayRef<DeclID> LazySpecializations;
+      if (auto *LS = Common->LazySpecializations)
+        LazySpecializations = ArrayRef<DeclID>(LS + 1, LS + 1 + LS[0]);
+
+      Record.push_back(Specializations.size() +
+                       PartialSpecializations.size() +
+                       LazySpecializations.size());
+      for (auto &Entry : Specializations) {
+        auto *D = getSpecializationDecl(Entry);
+        assert(D->isCanonicalDecl() && "non-canonical decl in set");
+        Writer.AddDeclRef(D, Record);
+      }
+      for (auto &Entry : PartialSpecializations) {
+        auto *D = getSpecializationDecl(Entry);
+        assert(D->isCanonicalDecl() && "non-canonical decl in set");
+        Writer.AddDeclRef(D, Record);
+      }
+      for (DeclID ID : LazySpecializations)
+        Record.push_back(ID);
+    }
   };
 }
 
@@ -203,8 +255,9 @@ void ASTDeclWriter::VisitTranslationUnitDecl(TranslationUnitDecl *D) {
 void ASTDeclWriter::VisitNamedDecl(NamedDecl *D) {
   VisitDecl(D);
   Writer.AddDeclarationName(D->getDeclName(), Record);
-  if (needsAnonymousDeclarationNumber(D))
-    Record.push_back(Writer.getAnonymousDeclarationNumber(D));
+  Record.push_back(needsAnonymousDeclarationNumber(D)
+                       ? Writer.getAnonymousDeclarationNumber(D)
+                       : 0);
 }
 
 void ASTDeclWriter::VisitTypeDecl(TypeDecl *D) {
@@ -370,21 +423,21 @@ void ASTDeclWriter::VisitFunctionDecl(FunctionDecl *D) {
   // FunctionDecl's body is handled last at ASTWriterDecl::Visit,
   // after everything else is written.
   
-  Record.push_back(D->getStorageClass()); // FIXME: stable encoding
+  Record.push_back((int)D->SClass); // FIXME: stable encoding
   Record.push_back(D->IsInline);
-  Record.push_back(D->isInlineSpecified());
-  Record.push_back(D->isVirtualAsWritten());
-  Record.push_back(D->isPure());
-  Record.push_back(D->hasInheritedPrototype());
-  Record.push_back(D->hasWrittenPrototype());
-  Record.push_back(D->isDeletedAsWritten());
-  Record.push_back(D->isTrivial());
-  Record.push_back(D->isDefaulted());
-  Record.push_back(D->isExplicitlyDefaulted());
-  Record.push_back(D->hasImplicitReturnZero());
-  Record.push_back(D->isConstexpr());
+  Record.push_back(D->IsInlineSpecified);
+  Record.push_back(D->IsVirtualAsWritten);
+  Record.push_back(D->IsPure);
+  Record.push_back(D->HasInheritedPrototype);
+  Record.push_back(D->HasWrittenPrototype);
+  Record.push_back(D->IsDeleted);
+  Record.push_back(D->IsTrivial);
+  Record.push_back(D->IsDefaulted);
+  Record.push_back(D->IsExplicitlyDefaulted);
+  Record.push_back(D->HasImplicitReturnZero);
+  Record.push_back(D->IsConstexpr);
   Record.push_back(D->HasSkippedBody);
-  Record.push_back(D->isLateTemplateParsed());
+  Record.push_back(D->IsLateTemplateParsed);
   Record.push_back(D->getLinkageInternal());
   Writer.AddSourceLocation(D->getLocEnd(), Record);
 
@@ -1076,7 +1129,7 @@ void ASTDeclWriter::VisitCXXConstructorDecl(CXXConstructorDecl *D) {
 void ASTDeclWriter::VisitCXXDestructorDecl(CXXDestructorDecl *D) {
   VisitCXXMethodDecl(D);
 
-  Writer.AddDeclRef(D->OperatorDelete, Record);
+  Writer.AddDeclRef(D->getOperatorDelete(), Record);
 
   Code = serialization::DECL_CXX_DESTRUCTOR;
 }
@@ -1171,24 +1224,8 @@ void ASTDeclWriter::VisitRedeclarableTemplateDecl(RedeclarableTemplateDecl *D) {
 void ASTDeclWriter::VisitClassTemplateDecl(ClassTemplateDecl *D) {
   VisitRedeclarableTemplateDecl(D);
 
-  if (D->isFirstDecl()) {
-    typedef llvm::FoldingSetVector<ClassTemplateSpecializationDecl> CTSDSetTy;
-    CTSDSetTy &CTSDSet = D->getSpecializations();
-    Record.push_back(CTSDSet.size());
-    for (CTSDSetTy::iterator I=CTSDSet.begin(), E = CTSDSet.end(); I!=E; ++I) {
-      assert(I->isCanonicalDecl() && "Expected only canonical decls in set");
-      Writer.AddDeclRef(&*I, Record);
-    }
-
-    typedef llvm::FoldingSetVector<ClassTemplatePartialSpecializationDecl>
-      CTPSDSetTy;
-    CTPSDSetTy &CTPSDSet = D->getPartialSpecializations();
-    Record.push_back(CTPSDSet.size());
-    for (CTPSDSetTy::iterator I=CTPSDSet.begin(), E=CTPSDSet.end(); I!=E; ++I) {
-      assert(I->isCanonicalDecl() && "Expected only canonical decls in set");
-      Writer.AddDeclRef(&*I, Record); 
-    }
-  }
+  if (D->isFirstDecl())
+    AddTemplateSpecializations(D);
   Code = serialization::DECL_CLASS_TEMPLATE;
 }
 
@@ -1246,26 +1283,8 @@ void ASTDeclWriter::VisitClassTemplatePartialSpecializationDecl(
 void ASTDeclWriter::VisitVarTemplateDecl(VarTemplateDecl *D) {
   VisitRedeclarableTemplateDecl(D);
 
-  if (D->isFirstDecl()) {
-    typedef llvm::FoldingSetVector<VarTemplateSpecializationDecl> VTSDSetTy;
-    VTSDSetTy &VTSDSet = D->getSpecializations();
-    Record.push_back(VTSDSet.size());
-    for (VTSDSetTy::iterator I = VTSDSet.begin(), E = VTSDSet.end(); I != E;
-         ++I) {
-      assert(I->isCanonicalDecl() && "Expected only canonical decls in set");
-      Writer.AddDeclRef(&*I, Record);
-    }
-
-    typedef llvm::FoldingSetVector<VarTemplatePartialSpecializationDecl>
-    VTPSDSetTy;
-    VTPSDSetTy &VTPSDSet = D->getPartialSpecializations();
-    Record.push_back(VTPSDSet.size());
-    for (VTPSDSetTy::iterator I = VTPSDSet.begin(), E = VTPSDSet.end(); I != E;
-         ++I) {
-      assert(I->isCanonicalDecl() && "Expected only canonical decls in set");
-      Writer.AddDeclRef(&*I, Record);
-    }
-  }
+  if (D->isFirstDecl())
+    AddTemplateSpecializations(D);
   Code = serialization::DECL_VAR_TEMPLATE;
 }
 
@@ -1330,19 +1349,8 @@ void ASTDeclWriter::VisitClassScopeFunctionSpecializationDecl(
 void ASTDeclWriter::VisitFunctionTemplateDecl(FunctionTemplateDecl *D) {
   VisitRedeclarableTemplateDecl(D);
 
-  if (D->isFirstDecl()) {
-    // This FunctionTemplateDecl owns the CommonPtr; write it.
-
-    // Write the function specialization declarations.
-    Record.push_back(D->getSpecializations().size());
-    for (llvm::FoldingSetVector<FunctionTemplateSpecializationInfo>::iterator
-           I = D->getSpecializations().begin(),
-           E = D->getSpecializations().end()   ; I != E; ++I) {
-      assert(I->Function->isCanonicalDecl() &&
-             "Expected only canonical decls in set");
-      Writer.AddDeclRef(I->Function, Record);
-    }
-  }
+  if (D->isFirstDecl())
+    AddTemplateSpecializations(D);
   Code = serialization::DECL_FUNCTION_TEMPLATE;
 }
 
@@ -1448,25 +1456,59 @@ void ASTDeclWriter::VisitDeclContext(DeclContext *DC, uint64_t LexicalOffset,
 template <typename T>
 void ASTDeclWriter::VisitRedeclarable(Redeclarable<T> *D) {
   T *First = D->getFirstDecl();
-  if (First->getMostRecentDecl() != First) {
+  T *MostRecent = First->getMostRecentDecl();
+  if (MostRecent != First) {
     assert(isRedeclarableDeclKind(static_cast<T *>(D)->getKind()) &&
            "Not considered redeclarable?");
-    
+
     // There is more than one declaration of this entity, so we will need to
     // write a redeclaration chain.
     Writer.AddDeclRef(First, Record);
     Writer.Redeclarations.insert(First);
 
+    auto *Previous = D->getPreviousDecl();
+
+    // In a modules build, we can have imported declarations after a local
+    // canonical declaration. If this is the first local declaration, emit
+    // a list of all such imported declarations so that we can ensure they
+    // are loaded before we are. This allows us to rebuild the redecl chain
+    // in the right order on reload (all declarations imported by a module
+    // should be before all declarations provided by that module).
+    bool EmitImportedMergedCanonicalDecls = false;
+    if (Context.getLangOpts().Modules && Writer.Chain) {
+      auto *PreviousLocal = Previous;
+      while (PreviousLocal && PreviousLocal->isFromASTFile())
+        PreviousLocal = PreviousLocal->getPreviousDecl();
+      if (!PreviousLocal)
+        EmitImportedMergedCanonicalDecls = true;
+    }
+    if (EmitImportedMergedCanonicalDecls) {
+      llvm::SmallMapVector<ModuleFile*, Decl*, 16> FirstInModule;
+      for (auto *Redecl = MostRecent; Redecl;
+           Redecl = Redecl->getPreviousDecl())
+        if (Redecl->isFromASTFile())
+          FirstInModule[Writer.Chain->getOwningModuleFile(Redecl)] = Redecl;
+      // FIXME: If FirstInModule has entries for modules A and B, and B imports
+      // A (directly or indirectly), we don't need to write the entry for A.
+      Record.push_back(FirstInModule.size());
+      for (auto I = FirstInModule.rbegin(), E = FirstInModule.rend();
+           I != E; ++I)
+        Writer.AddDeclRef(I->second, Record);
+    } else
+      Record.push_back(0);
+
     // Make sure that we serialize both the previous and the most-recent 
     // declarations, which (transitively) ensures that all declarations in the
     // chain get serialized.
-    (void)Writer.GetDeclRef(D->getPreviousDecl());
-    (void)Writer.GetDeclRef(First->getMostRecentDecl());
+    //
+    // FIXME: This is not correct; when we reach an imported declaration we
+    // won't emit its previous declaration.
+    (void)Writer.GetDeclRef(Previous);
+    (void)Writer.GetDeclRef(MostRecent);
   } else {
     // We use the sentinel value 0 to indicate an only declaration.
     Record.push_back(0);
   }
-  
 }
 
 void ASTDeclWriter::VisitOMPThreadPrivateDecl(OMPThreadPrivateDecl *D) {
@@ -1504,6 +1546,7 @@ void ASTWriter::WriteDeclAbbrevs() {
   // NamedDecl
   Abv->Add(BitCodeAbbrevOp(0));                       // NameKind = Identifier
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6)); // Name
+  Abv->Add(BitCodeAbbrevOp(0));                       // AnonDeclNumber
   // ValueDecl
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6)); // Type
   // DeclaratorDecl
@@ -1536,6 +1579,7 @@ void ASTWriter::WriteDeclAbbrevs() {
   // NamedDecl
   Abv->Add(BitCodeAbbrevOp(0));                       // NameKind = Identifier
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6)); // Name
+  Abv->Add(BitCodeAbbrevOp(0));                       // AnonDeclNumber
   // ValueDecl
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6)); // Type
   // DeclaratorDecl
@@ -1573,6 +1617,7 @@ void ASTWriter::WriteDeclAbbrevs() {
   // NamedDecl
   Abv->Add(BitCodeAbbrevOp(0));                       // NameKind = Identifier
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6)); // Name
+  Abv->Add(BitCodeAbbrevOp(0));                       // AnonDeclNumber
   // TypeDecl
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6)); // Source Location
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6)); // Type Ref
@@ -1620,6 +1665,7 @@ void ASTWriter::WriteDeclAbbrevs() {
   // NamedDecl
   Abv->Add(BitCodeAbbrevOp(0));                       // NameKind = Identifier
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6)); // Name
+  Abv->Add(BitCodeAbbrevOp(0));                       // AnonDeclNumber
   // TypeDecl
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6)); // Source Location
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6)); // Type Ref
@@ -1662,6 +1708,7 @@ void ASTWriter::WriteDeclAbbrevs() {
   // NamedDecl
   Abv->Add(BitCodeAbbrevOp(0));                       // NameKind = Identifier
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6)); // Name
+  Abv->Add(BitCodeAbbrevOp(0));                       // AnonDeclNumber
   // ValueDecl
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6)); // Type
   // DeclaratorDecl
@@ -1715,6 +1762,7 @@ void ASTWriter::WriteDeclAbbrevs() {
   // NamedDecl
   Abv->Add(BitCodeAbbrevOp(0));                       // NameKind = Identifier
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6)); // Name
+  Abv->Add(BitCodeAbbrevOp(0));                       // AnonDeclNumber
   // TypeDecl
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6)); // Source Location
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6)); // Type Ref
@@ -1743,6 +1791,7 @@ void ASTWriter::WriteDeclAbbrevs() {
   // NamedDecl
   Abv->Add(BitCodeAbbrevOp(0));                       // NameKind = Identifier
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6)); // Name
+  Abv->Add(BitCodeAbbrevOp(0));                       // AnonDeclNumber
   // ValueDecl
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6)); // Type
   // DeclaratorDecl
@@ -1788,6 +1837,7 @@ void ASTWriter::WriteDeclAbbrevs() {
   // NamedDecl
   Abv->Add(BitCodeAbbrevOp(DeclarationName::Identifier)); // NameKind
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6));   // Identifier
+  Abv->Add(BitCodeAbbrevOp(0));                         // AnonDeclNumber
   // ValueDecl
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6));   // Type
   // DeclaratorDecl
@@ -1802,7 +1852,7 @@ void ASTWriter::WriteDeclAbbrevs() {
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // Pure
   Abv->Add(BitCodeAbbrevOp(0));                         // HasInheritedProto
   Abv->Add(BitCodeAbbrevOp(1));                         // HasWrittenProto
-  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // DeletedAsWritten
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // Deleted
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // Trivial
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // Defaulted
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // ExplicitlyDefaulted
@@ -1948,9 +1998,10 @@ void ASTWriter::WriteDecl(ASTContext &Context, Decl *D) {
 
   // Determine the ID for this declaration.
   serialization::DeclID ID;
-  if (D->isFromASTFile())
+  if (D->isFromASTFile()) {
+    assert(isRewritten(D) && "should not be emitting imported decl");
     ID = getDeclID(D);
-  else {
+  } else {
     serialization::DeclID &IDR = DeclIDs[D];
     if (IDR == 0)
       IDR = NextDeclID++;

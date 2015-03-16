@@ -113,7 +113,7 @@ inline void *operator new(decltype(sizeof(1)), void *p) noexcept { return p; }
 // CHECK-LABEL: define
 void f10() {
   void *void_src();
-  ( // CHECK: icmp {{.*}} !dbg [[DBG_F10_ICMP:.*]]
+  (
     // CHECK: store {{.*}} !dbg [[DBG_F10_STORE:!.*]]
 #line 1100
       new (void_src()) int(src()));
@@ -250,6 +250,49 @@ void f20(int a, int b, int c) {
     ;
 }
 
+// CHECK-LABEL: define
+int f21_a(int = 0);
+void f21_b(int = f21_a());
+void f21() {
+// CHECK: call {{.*}}f21_b{{.*}}, !dbg [[DBG_F21:![0-9]*]]
+#line 2300
+  f21_b();
+}
+
+// CHECK-LABEL: define
+struct f22_dtor {
+  ~f22_dtor();
+};
+void f22() {
+  {
+    f22_dtor f;
+    src();
+// CHECK: invoke {{.*}}src
+// CHECK: call {{.*}}, !dbg [[DBG_F22:![0-9]*]]
+// CHECK: call {{.*}}, !dbg [[DBG_F22]]
+#line 2400
+  }
+}
+
+// CHECK-LABEL: define
+struct f23_struct {
+};
+f23_struct f23_a();
+void f23_b(f23_struct = f23_a());
+void f23() {
+// CHECK: call {{.*}}f23_a{{.*}}, !dbg [[DBG_F23:![0-9]*]]
+#line 2500
+  f23_b();
+}
+
+// CHECK-LABEL: define
+void f24_a(__complex float = complex_src());
+void f24() {
+// CHECK: call {{.*}}complex_src{{.*}}, !dbg [[DBG_F24:![0-9]*]]
+#line 2600
+  f24_a();
+}
+
 // CHECK: [[DBG_F1]] = !MDLocation(line: 100,
 // CHECK: [[DBG_FOO_VALUE]] = !MDLocation(line: 200,
 // CHECK: [[DBG_FOO_REF]] = !MDLocation(line: 202,
@@ -262,7 +305,6 @@ void f20(int a, int b, int c) {
 // CHECK: [[DBG_F7]] = !MDLocation(line: 800,
 // CHECK: [[DBG_F8]] = !MDLocation(line: 900,
 // CHECK: [[DBG_F9]] = !MDLocation(line: 1000,
-// CHECK: [[DBG_F10_ICMP]] = !MDLocation(line: 1100,
 // CHECK: [[DBG_F10_STORE]] = !MDLocation(line: 1100,
 // CHECK: [[DBG_GLBL_CTOR_B]] = !MDLocation(line: 1200,
 // CHECK: [[DBG_GLBL_DTOR_B]] = !MDLocation(line: 1200,
@@ -278,3 +320,5 @@ void f20(int a, int b, int c) {
 // CHECK: [[DBG_F19_1]] = !MDLocation(line: 2100,
 // CHECK: [[DBG_F19_2]] = !MDLocation(line: 2101,
 // CHECK: [[DBG_F20_1]] = !MDLocation(line: 2200,
+// CHECK: [[DBG_F23]] = !MDLocation(line: 2500,
+// CHECK: [[DBG_F24]] = !MDLocation(line: 2600,

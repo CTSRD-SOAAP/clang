@@ -4,8 +4,8 @@
 // simple return expressions.
 
 // CHECK: define {{.*}}foo
-// CHECK: call void @_ZN1CD1Ev(%class.C* {{.*}}), !dbg ![[CLEANUP:[0-9]+]]
-// CHECK: ret i32 0, !dbg ![[RET:[0-9]+]]
+// CHECK: call void @_ZN1CD1Ev(%class.C* {{.*}}), !dbg ![[RET:[0-9]+]]
+// CHECK: ret i32 0, !dbg ![[RET]]
 
 // CHECK: define {{.*}}bar
 // CHECK: ret void, !dbg ![[RETBAR:[0-9]+]]
@@ -23,9 +23,8 @@ int foo()
 {
   C c;
   c.i = 42;
-  // This breakpoint should be at/before the cleanup code.
-  // CHECK: ![[CLEANUP]] = !MDLocation(line: [[@LINE+1]], scope: !{{.*}})
   return 0;
+  // This breakpoint should be at/before the cleanup code.
   // CHECK: ![[RET]] = !MDLocation(line: [[@LINE+1]], scope: !{{.*}})
 }
 
@@ -46,14 +45,14 @@ void bar()
 void baz()
 {
   if (!foo())
-    // CHECK: ![[SCOPE1:.*]] = !{!"0xb\00[[@LINE-1]]\00{{.*}}", {{.*}} ; [ DW_TAG_lexical_block ]
+    // CHECK: ![[SCOPE1:.*]] = distinct !MDLexicalBlock({{.*}}, line: [[@LINE-1]])
     // CHECK: {{.*}} = !MDLocation(line: [[@LINE+1]], scope: ![[SCOPE1]])
     return;
 
   if (foo()) {
     // no cleanup
     // CHECK: {{.*}} = !MDLocation(line: [[@LINE+2]], scope: ![[SCOPE2:.*]])
-    // CHECK: ![[SCOPE2]] = !{!"0xb\00[[@LINE-3]]\00{{.*}}", {{.*}} ; [ DW_TAG_lexical_block ]
+    // CHECK: ![[SCOPE2]] = distinct !MDLexicalBlock({{.*}}, line: [[@LINE-3]])
     return;
   }
   // CHECK: ![[RETBAZ]] = !MDLocation(line: [[@LINE+1]], scope: !{{.*}})

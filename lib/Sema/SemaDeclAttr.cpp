@@ -351,13 +351,13 @@ static bool isIntOrBool(Expr *Exp) {
 // Check to see if the type is a smart pointer of some kind.  We assume
 // it's a smart pointer if it defines both operator-> and operator*.
 static bool threadSafetyCheckIsSmartPointer(Sema &S, const RecordType* RT) {
-  DeclContextLookupConstResult Res1 = RT->getDecl()->lookup(
-    S.Context.DeclarationNames.getCXXOperatorName(OO_Star));
+  DeclContextLookupResult Res1 = RT->getDecl()->lookup(
+      S.Context.DeclarationNames.getCXXOperatorName(OO_Star));
   if (Res1.empty())
     return false;
 
-  DeclContextLookupConstResult Res2 = RT->getDecl()->lookup(
-    S.Context.DeclarationNames.getCXXOperatorName(OO_Arrow));
+  DeclContextLookupResult Res2 = RT->getDecl()->lookup(
+      S.Context.DeclarationNames.getCXXOperatorName(OO_Arrow));
   if (Res2.empty())
     return false;
 
@@ -1548,18 +1548,16 @@ static void handleTLSModelAttr(Sema &S, Decl *D,
                           Attr.getAttributeSpellingListIndex()));
 }
 
-static void handleMallocAttr(Sema &S, Decl *D, const AttributeList &Attr) {
-  if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(D)) {
-    QualType RetTy = FD->getReturnType();
-    if (RetTy->isAnyPointerType() || RetTy->isBlockPointerType()) {
-      D->addAttr(::new (S.Context)
-                 MallocAttr(Attr.getRange(), S.Context,
-                            Attr.getAttributeSpellingListIndex()));
-      return;
-    }
+static void handleRestrictAttr(Sema &S, Decl *D, const AttributeList &Attr) {
+  QualType ResultType = getFunctionOrMethodResultType(D);
+  if (ResultType->isAnyPointerType() || ResultType->isBlockPointerType()) {
+    D->addAttr(::new (S.Context) RestrictAttr(
+        Attr.getRange(), S.Context, Attr.getAttributeSpellingListIndex()));
+    return;
   }
 
-  S.Diag(Attr.getLoc(), diag::warn_attribute_malloc_pointer_only);
+  S.Diag(Attr.getLoc(), diag::warn_attribute_return_pointers_only)
+      << Attr.getName() << getFunctionOrMethodResultSourceRange(D);
 }
 
 static void handleCommonAttr(Sema &S, Decl *D, const AttributeList &Attr) {
@@ -2344,12 +2342,24 @@ SectionAttr *Sema::mergeSectionAttr(Decl *D, SourceRange Range,
                                      AttrSpellingListIndex);
 }
 
+bool Sema::checkSectionName(SourceLocation LiteralLoc, StringRef SecName) {
+  std::string Error = Context.getTargetInfo().isValidSectionSpecifier(SecName);
+  if (!Error.empty()) {
+    Diag(LiteralLoc, diag::err_attribute_section_invalid_for_target) << Error;
+    return false;
+  }
+  return true;
+}
+
 static void handleSectionAttr(Sema &S, Decl *D, const AttributeList &Attr) {
   // Make sure that there is a string literal as the sections's single
   // argument.
   StringRef Str;
   SourceLocation LiteralLoc;
   if (!S.checkStringLiteralArgumentAttr(Attr, 0, Str, &LiteralLoc))
+    return;
+
+  if (!S.checkSectionName(LiteralLoc, Str))
     return;
 
   // If the target wants to validate the section specifier, make it happen.
@@ -2495,6 +2505,8 @@ static FormatAttrKind getFormatAttrKind(StringRef Format) {
     .Cases("scanf", "printf", "printf0", "strfmon", SupportedFormat)
     .Cases("cmn_err", "vcmn_err", "zcmn_err", SupportedFormat)
     .Case("kprintf", SupportedFormat) // OpenBSD.
+    .Case("freebsd_kprintf", SupportedFormat) // FreeBSD.
+    .Case("os_trace", SupportedFormat)
 
     .Cases("gcc_diag", "gcc_cdiag", "gcc_cxxdiag", "gcc_tdiag", IgnoredFormat)
     .Default(InvalidFormat);
@@ -3393,9 +3405,12 @@ bool Sema::CheckCallingConvAttr(const AttributeList &attr, CallingConv &CC,
 
   const TargetInfo &TI = Context.getTargetInfo();
   TargetInfo::CallingConvCheckResult A = TI.checkCallingConvention(CC);
-  if (A == TargetInfo::CCCR_Warning) {
-    Diag(attr.getLoc(), diag::warn_cconv_ignored) << attr.getName();
+  if (A != TargetInfo::CCCR_OK) {
+    if (A == TargetInfo::CCCR_Warning)
+      Diag(attr.getLoc(), diag::warn_cconv_ignored) << attr.getName();
 
+    // This convention is not valid for the target. Use the default function or
+    // method calling convention.
     TargetInfo::CallingConvMethodType MT = TargetInfo::CCMT_Unknown;
     if (FD)
       MT = FD->isCXXInstanceMember() ? TargetInfo::CCMT_Member : 
@@ -4256,6 +4271,12 @@ static void handleDeprecatedAttr(Sema &S, Decl *D, const AttributeList &Attr) {
       return;
     }
   }
+
+  if (!S.getLangOpts().CPlusPlus14)
+    if (Attr.isCXX11Attribute() &&
+        !(Attr.hasScope() && Attr.getScopeName()->isStr("gnu")))
+      S.Diag(Attr.getLoc(), diag::ext_deprecated_attr_is_a_cxx14_extension);
+
   handleAttrWithMessage<DeprecatedAttr>(S, D, Attr);
 }
 
@@ -4453,8 +4474,8 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
   case AttributeList::AT_CUDALaunchBounds:
     handleLaunchBoundsAttr(S, D, Attr);
     break;
-  case AttributeList::AT_Malloc:
-    handleMallocAttr(S, D, Attr);
+  case AttributeList::AT_Restrict:
+    handleRestrictAttr(S, D, Attr);
     break;
   case AttributeList::AT_MayAlias:
     handleSimpleAttribute<MayAliasAttr>(S, D, Attr);
@@ -4689,11 +4710,11 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
     break;
 
   // Microsoft attributes:
-  case AttributeList::AT_MsNoVTable:
-    handleSimpleAttribute<MsNoVTableAttr>(S, D, Attr);
+  case AttributeList::AT_MSNoVTable:
+    handleSimpleAttribute<MSNoVTableAttr>(S, D, Attr);
     break;
-  case AttributeList::AT_MsStruct:
-    handleSimpleAttribute<MsStructAttr>(S, D, Attr);
+  case AttributeList::AT_MSStruct:
+    handleSimpleAttribute<MSStructAttr>(S, D, Attr);
     break;
   case AttributeList::AT_Uuid:
     handleUuidAttr(S, D, Attr);

@@ -33,8 +33,8 @@ class ObjCPropertyImplDecl;
 class CXXCtorInitializer;
 
 class ObjCListBase {
-  ObjCListBase(const ObjCListBase &) LLVM_DELETED_FUNCTION;
-  void operator=(const ObjCListBase &) LLVM_DELETED_FUNCTION;
+  ObjCListBase(const ObjCListBase &) = delete;
+  void operator=(const ObjCListBase &) = delete;
 protected:
   /// List is an array of pointers to objects that are not owned by this object.
   void **List;
@@ -820,8 +820,8 @@ public:
   ObjCMethodDecl *getCategoryInstanceMethod(Selector Sel) const;
   ObjCMethodDecl *getCategoryClassMethod(Selector Sel) const;
   ObjCMethodDecl *getCategoryMethod(Selector Sel, bool isInstance) const {
-    return isInstance ? getInstanceMethod(Sel)
-                      : getClassMethod(Sel);
+    return isInstance ? getCategoryInstanceMethod(Sel)
+                      : getCategoryClassMethod(Sel);
   }
 
   typedef ObjCProtocolList::iterator protocol_iterator;

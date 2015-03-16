@@ -27,16 +27,25 @@ bool startsExternCBlock(const AnnotatedLine &Line) {
 
 class LineJoiner {
 public:
-  LineJoiner(const FormatStyle &Style) : Style(Style) {}
+  LineJoiner(const FormatStyle &Style, const AdditionalKeywords &Keywords)
+      : Style(Style), Keywords(Keywords) {}
 
   /// \brief Calculates how many lines can be merged into 1 starting at \p I.
   unsigned
   tryFitMultipleLinesInOne(unsigned Indent,
                            SmallVectorImpl<AnnotatedLine *>::const_iterator I,
                            SmallVectorImpl<AnnotatedLine *>::const_iterator E) {
+    // Can't join the last line with anything.
+    if (I + 1 == E)
+      return 0;
     // We can never merge stuff if there are trailing line comments.
     const AnnotatedLine *TheLine = *I;
     if (TheLine->Last->is(TT_LineComment))
+      return 0;
+    if (I[1]->Type == LT_Invalid || I[1]->First->MustBreakBefore)
+      return 0;
+    if (TheLine->InPPDirective &&
+        (!I[1]->InPPDirective || I[1]->First->HasUnescapedNewline))
       return 0;
 
     if (Style.ColumnLimit > 0 && Indent > Style.ColumnLimit)
@@ -49,9 +58,6 @@ public:
     Limit = TheLine->Last->TotalLength > Limit
                 ? 0
                 : Limit - TheLine->Last->TotalLength;
-
-    if (I + 1 == E || I[1]->Type == LT_Invalid || I[1]->First->MustBreakBefore)
-      return 0;
 
     // FIXME: TheLine->Level != 0 might or might not be the right check to do.
     // If necessary, change to something smarter.
@@ -119,8 +125,6 @@ private:
                             SmallVectorImpl<AnnotatedLine *>::const_iterator E,
                             unsigned Limit) {
     if (Limit == 0)
-      return 0;
-    if (!I[1]->InPPDirective || I[1]->First->HasUnescapedNewline)
       return 0;
     if (I + 2 != E && I[2]->InPPDirective && !I[2]->First->HasUnescapedNewline)
       return 0;
@@ -191,6 +195,8 @@ private:
     AnnotatedLine &Line = **I;
 
     // Don't merge ObjC @ keywords and methods.
+    // FIXME: If an option to allow short exception handling clauses on a single
+    // line is added, change this to not return for @try and friends.
     if (Style.Language != FormatStyle::LK_Java &&
         Line.First->isOneOf(tok::at, tok::minus, tok::plus))
       return 0;
@@ -200,7 +206,9 @@ private:
     if (Line.First->isOneOf(tok::kw_else, tok::kw_case))
       return 0;
     if (Line.First->isOneOf(tok::kw_if, tok::kw_while, tok::kw_do, tok::kw_try,
-                            tok::kw_catch, tok::kw_for, tok::r_brace)) {
+                            tok::kw___try, tok::kw_catch, tok::kw___finally,
+                            tok::kw_for, tok::r_brace) ||
+        Line.First->is(Keywords.kw___except)) {
       if (!Style.AllowShortBlocksOnASingleLine)
         return 0;
       if (!Style.AllowShortIfStatementsOnASingleLine &&
@@ -211,7 +219,11 @@ private:
         return 0;
       // FIXME: Consider an option to allow short exception handling clauses on
       // a single line.
-      if (Line.First->isOneOf(tok::kw_try, tok::kw_catch))
+      // FIXME: This isn't covered by tests.
+      // FIXME: For catch, __except, __finally the first token on the line
+      // is '}', so this isn't correct here.
+      if (Line.First->isOneOf(tok::kw_try, tok::kw___try, tok::kw_catch,
+                              Keywords.kw___except, tok::kw___finally))
         return 0;
     }
 
@@ -286,6 +298,7 @@ private:
   }
 
   const FormatStyle &Style;
+  const AdditionalKeywords &Keywords;
 };
 
 class NoColumnLimitFormatter {
@@ -324,7 +337,7 @@ unsigned
 UnwrappedLineFormatter::format(const SmallVectorImpl<AnnotatedLine *> &Lines,
                                bool DryRun, int AdditionalIndent,
                                bool FixBadIndentation) {
-  LineJoiner Joiner(Style);
+  LineJoiner Joiner(Style, Keywords);
 
   // Try to look up already computed penalty in DryRun-mode.
   std::pair<const SmallVectorImpl<AnnotatedLine *> *, unsigned> CacheKey(
@@ -502,7 +515,8 @@ void UnwrappedLineFormatter::formatFirstToken(FormatToken &RootToken,
     ++Newlines;
 
   // Remove empty lines after access specifiers.
-  if (PreviousLine && PreviousLine->First->isAccessSpecifier())
+  if (PreviousLine && PreviousLine->First->isAccessSpecifier() &&
+      (!PreviousLine->InPPDirective || !RootToken.HasUnescapedNewline))
     Newlines = std::min(1u, Newlines);
 
   Whitespaces->replaceWhitespace(RootToken, Newlines, IndentLevel, Indent,
