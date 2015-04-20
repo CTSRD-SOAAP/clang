@@ -61,8 +61,8 @@ public:
                  DiagnosticOptions *DiagOpts)
     : DiagnosticNoteRenderer(LangOpts, DiagOpts), Writer(Writer) {}
 
-  virtual ~SDiagsRenderer() {}
-  
+  ~SDiagsRenderer() override {}
+
 protected:
   void emitDiagnosticMessage(SourceLocation Loc,
                              PresumedLoc PLoc,
@@ -158,7 +158,7 @@ public:
     EmitPreamble();
   }
 
-  ~SDiagsWriter() {}
+  ~SDiagsWriter() override {}
 
   void HandleDiagnostic(DiagnosticsEngine::Level DiagLevel,
                         const Diagnostic &Info) override;
@@ -632,7 +632,7 @@ void SDiagsWriter::HandleDiagnostic(DiagnosticsEngine::Level DiagLevel,
          "Unexpected diagnostic with valid location outside of a source file");
   SDiagsRenderer Renderer(*this, *LangOpts, &*State->DiagOpts);
   Renderer.emitDiagnostic(Info.getLocation(), DiagLevel,
-                          State->diagBuf.str(),
+                          State->diagBuf,
                           Info.getRanges(),
                           Info.getFixItHints(),
                           &Info.getSourceManager(),

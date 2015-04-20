@@ -58,12 +58,16 @@ void CodeGenPGO::setFuncName(llvm::Function *Fn) {
 }
 
 void CodeGenPGO::createFuncNameVar(llvm::GlobalValue::LinkageTypes Linkage) {
-  // Usually, we want to match the function's linkage, but
-  // available_externally and extern_weak both have the wrong semantics.
+  // We generally want to match the function's linkage, but available_externally
+  // and extern_weak both have the wrong semantics, and anything that doesn't
+  // need to link across compilation units doesn't need to be visible at all.
   if (Linkage == llvm::GlobalValue::ExternalWeakLinkage)
     Linkage = llvm::GlobalValue::LinkOnceAnyLinkage;
   else if (Linkage == llvm::GlobalValue::AvailableExternallyLinkage)
     Linkage = llvm::GlobalValue::LinkOnceODRLinkage;
+  else if (Linkage == llvm::GlobalValue::InternalLinkage ||
+           Linkage == llvm::GlobalValue::ExternalLinkage)
+    Linkage = llvm::GlobalValue::PrivateLinkage;
 
   auto *Value =
       llvm::ConstantDataArray::getString(CGM.getLLVMContext(), FuncName, false);
@@ -876,12 +880,10 @@ llvm::MDNode *CodeGenPGO::createLoopWeights(const Stmt *Cond,
   if (!haveRegionCounts())
     return nullptr;
   uint64_t LoopCount = Cnt.getCount();
-  uint64_t CondCount = 0;
-  bool Found = getStmtCount(Cond, CondCount);
-  assert(Found && "missing expected loop condition count");
-  (void)Found;
-  if (CondCount == 0)
+  Optional<uint64_t> CondCount = getStmtCount(Cond);
+  assert(CondCount.hasValue() && "missing expected loop condition count");
+  if (*CondCount == 0)
     return nullptr;
   return createBranchWeights(LoopCount,
-                             std::max(CondCount, LoopCount) - LoopCount);
+                             std::max(*CondCount, LoopCount) - LoopCount);
 }

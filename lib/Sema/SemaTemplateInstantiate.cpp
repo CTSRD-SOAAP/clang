@@ -1747,7 +1747,7 @@ Sema::SubstBaseSpecifiers(CXXRecordDecl *Instantiation,
                           const MultiLevelTemplateArgumentList &TemplateArgs) {
   bool Invalid = false;
   SmallVector<CXXBaseSpecifier*, 4> InstantiatedBases;
-  for (const auto Base : Pattern->bases()) {
+  for (const auto &Base : Pattern->bases()) {
     if (!Base.getType()->isDependentType()) {
       if (const CXXRecordDecl *RD = Base.getType()->getAsCXXRecordDecl()) {
         if (RD->isInvalidDecl())
@@ -2042,6 +2042,10 @@ Sema::InstantiateClass(SourceLocation PointOfInstantiation,
   ActOnFields(nullptr, Instantiation->getLocation(), Instantiation, Fields,
               SourceLocation(), SourceLocation(), nullptr);
   CheckCompletedCXXClass(Instantiation);
+
+  // Default arguments are parsed, if not instantiated. We can go instantiate
+  // default arg exprs for default constructors if necessary now.
+  ActOnFinishCXXMemberDefaultArgs(Instantiation);
 
   // Instantiate late parsed attributes, and attach them to their decls.
   // See Sema::InstantiateAttrs

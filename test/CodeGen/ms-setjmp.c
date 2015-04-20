@@ -1,17 +1,20 @@
+// RUN: %clang_cc1 -fms-extensions -DDECLARE_SETJMP -triple i686-windows-msvc   -emit-llvm %s -o - | FileCheck --check-prefix=I386 %s
+// RUN: %clang_cc1 -fms-extensions -DDECLARE_SETJMP -triple x86_64-windows-msvc -emit-llvm %s -o - | FileCheck --check-prefix=X64 %s
 // RUN: %clang_cc1 -fms-extensions -triple i686-windows-msvc   -emit-llvm %s -o - | FileCheck --check-prefix=I386 %s
 // RUN: %clang_cc1 -fms-extensions -triple x86_64-windows-msvc -emit-llvm %s -o - | FileCheck --check-prefix=X64 %s
-
 typedef char jmp_buf[1];
 
+#ifdef DECLARE_SETJMP
 int _setjmp(jmp_buf env);
 int _setjmpex(jmp_buf env);
+#endif
 
 jmp_buf jb;
 
 int test_setjmp() {
   return _setjmp(jb);
   // I386-LABEL: define i32 @test_setjmp
-  // I386:       %[[call:.*]] = call i32 (i8*, i32, ...)* @_setjmp3(i8* getelementptr inbounds ([1 x i8], [1 x i8]* @jb, i32 0, i32 0), i32 0)
+  // I386:       %[[call:.*]] = call i32 (i8*, i32, ...) @_setjmp3(i8* getelementptr inbounds ([1 x i8], [1 x i8]* @jb, i32 0, i32 0), i32 0)
   // I386-NEXT:  ret i32 %[[call]]
 
   // X64-LABEL: define i32 @test_setjmp
