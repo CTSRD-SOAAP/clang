@@ -100,7 +100,7 @@ private:
     // new_task);
     OMPRTL__kmpc_omp_task,
     // Call to void __kmpc_copyprivate(ident_t *loc, kmp_int32 global_tid,
-    // kmp_int32 cpy_size, void *cpy_data, void(*cpy_func)(void *, void *),
+    // size_t cpy_size, void *cpy_data, void(*cpy_func)(void *, void *),
     // kmp_int32 didit);
     OMPRTL__kmpc_copyprivate,
     // Call to kmp_int32 __kmpc_reduce(ident_t *loc, kmp_int32 global_tid,
@@ -118,10 +118,19 @@ private:
     // Call to void __kmpc_end_reduce_nowait(ident_t *loc, kmp_int32 global_tid,
     // kmp_critical_name *lck);
     OMPRTL__kmpc_end_reduce_nowait,
+    // Call to void __kmpc_omp_task_begin_if0(ident_t *, kmp_int32 gtid,
+    // kmp_task_t * new_task);
+    OMPRTL__kmpc_omp_task_begin_if0,
+    // Call to void __kmpc_omp_task_complete_if0(ident_t *, kmp_int32 gtid,
+    // kmp_task_t * new_task);
+    OMPRTL__kmpc_omp_task_complete_if0,
     // Call to void __kmpc_ordered(ident_t *loc, kmp_int32 global_tid);
     OMPRTL__kmpc_ordered,
     // Call to void __kmpc_end_ordered(ident_t *loc, kmp_int32 global_tid);
     OMPRTL__kmpc_end_ordered,
+    // Call to kmp_int32 __kmpc_omp_taskwait(ident_t *loc, kmp_int32
+    // global_tid);
+    OMPRTL__kmpc_omp_taskwait,
   };
 
   /// \brief Values for bit flags used in the ident_t to describe the fields.
@@ -336,26 +345,20 @@ public:
   ///
   void functionFinished(CodeGenFunction &CGF);
 
-  /// \brief Emits code for parallel call of the \a OutlinedFn with variables
-  /// captured in a record which address is stored in \a CapturedStruct.
+  /// \brief Emits code for parallel or serial call of the \a OutlinedFn with
+  /// variables captured in a record which address is stored in \a
+  /// CapturedStruct.
   /// \param OutlinedFn Outlined function to be run in parallel threads. Type of
   /// this function is void(*)(kmp_int32 *, kmp_int32, struct context_vars*).
   /// \param CapturedStruct A pointer to the record with the references to
   /// variables used in \a OutlinedFn function.
+  /// \param IfCond Condition in the associated 'if' clause, if it was
+  /// specified, nullptr otherwise.
   ///
   virtual void emitParallelCall(CodeGenFunction &CGF, SourceLocation Loc,
                                 llvm::Value *OutlinedFn,
-                                llvm::Value *CapturedStruct);
-
-  /// \brief Emits code for serial call of the \a OutlinedFn with variables
-  /// captured in a record which address is stored in \a CapturedStruct.
-  /// \param OutlinedFn Outlined function to be run in serial mode.
-  /// \param CapturedStruct A pointer to the record with the references to
-  /// variables used in \a OutlinedFn function.
-  ///
-  virtual void emitSerialCall(CodeGenFunction &CGF, SourceLocation Loc,
-                              llvm::Value *OutlinedFn,
-                              llvm::Value *CapturedStruct);
+                                llvm::Value *CapturedStruct,
+                                const Expr *IfCond);
 
   /// \brief Emits a critical region.
   /// \param CriticalName Name of the critical region.
@@ -521,7 +524,7 @@ public:
                          SourceLocation Loc);
 
   /// \brief Emit task region for the task directive. The task region is
-  /// emmitted in several steps:
+  /// emitted in several steps:
   /// 1. Emit a call to kmp_task_t *__kmpc_omp_task_alloc(ident_t *, kmp_int32
   /// gtid, kmp_int32 flags, size_t sizeof_kmp_task_t, size_t sizeof_shareds,
   /// kmp_routine_entry_t *task_entry). Here task_entry is a pointer to the
@@ -537,6 +540,7 @@ public:
   /// 4. Emit a call to kmp_int32 __kmpc_omp_task(ident_t *, kmp_int32 gtid,
   /// kmp_task_t *new_task), where new_task is a resulting structure from
   /// previous items.
+  /// \param D Current task directive.
   /// \param Tied true if the task is tied (the task is tied to the thread that
   /// can suspend its task region), false - untied (the task is not tied to any
   /// thread).
@@ -548,10 +552,29 @@ public:
   /// \param SharedsTy A type which contains references the shared variables.
   /// \param Shareds Context with the list of shared variables from the \a
   /// TaskFunction.
-  virtual void emitTaskCall(CodeGenFunction &CGF, SourceLocation Loc, bool Tied,
+  /// \param IfCond Not a nullptr if 'if' clause was specified, nullptr
+  /// otherwise.
+  /// \param PrivateVars List of references to private variables for the task
+  /// directive.
+  /// \param PrivateCopies List of private copies for each private variable in
+  /// \p PrivateVars.
+  /// \param FirstprivateVars List of references to private variables for the
+  /// task directive.
+  /// \param FirstprivateCopies List of private copies for each private variable
+  /// in \p FirstprivateVars.
+  /// \param FirstprivateInits List of references to auto generated variables
+  /// used for initialization of a single array element. Used if firstprivate
+  /// variable is of array type.
+  virtual void emitTaskCall(CodeGenFunction &CGF, SourceLocation Loc,
+                            const OMPExecutableDirective &D, bool Tied,
                             llvm::PointerIntPair<llvm::Value *, 1, bool> Final,
                             llvm::Value *TaskFunction, QualType SharedsTy,
-                            llvm::Value *Shareds);
+                            llvm::Value *Shareds, const Expr *IfCond,
+                            const ArrayRef<const Expr *> PrivateVars,
+                            const ArrayRef<const Expr *> PrivateCopies,
+                            const ArrayRef<const Expr *> FirstprivateVars,
+                            const ArrayRef<const Expr *> FirstprivateCopies,
+                            const ArrayRef<const Expr *> FirstprivateInits);
 
   /// \brief Emit code for the directive that does not require outlining.
   ///
@@ -600,6 +623,9 @@ public:
                              ArrayRef<const Expr *> RHSExprs,
                              ArrayRef<const Expr *> ReductionOps,
                              bool WithNowait);
+
+  /// \brief Emit code for 'taskwait' directive.
+  virtual void emitTaskwaitCall(CodeGenFunction &CGF, SourceLocation Loc);
 };
 
 } // namespace CodeGen

@@ -1279,6 +1279,10 @@ private:
   bool RequireCompleteTypeImpl(SourceLocation Loc, QualType T,
                            TypeDiagnoser &Diagnoser);
 public:
+  /// \brief Make a merged definition of an existing hidden definition \p ND
+  /// visible at the specified location.
+  void makeMergedDefinitionVisible(NamedDecl *ND, SourceLocation Loc);
+
   /// Determine if \p D has a visible definition. If not, suggest a declaration
   /// that should be made visible to expose the definition.
   bool hasVisibleDefinition(NamedDecl *D, NamedDecl **Suggested);
@@ -1724,6 +1728,12 @@ public:
     TUK_Friend       // Friend declaration:  'friend struct foo;'
   };
 
+  struct SkipBodyInfo {
+    SkipBodyInfo() : ShouldSkip(false), Previous(nullptr) {}
+    bool ShouldSkip;
+    NamedDecl *Previous;
+  };
+
   Decl *ActOnTag(Scope *S, unsigned TagSpec, TagUseKind TUK,
                  SourceLocation KWLoc, CXXScopeSpec &SS,
                  IdentifierInfo *Name, SourceLocation NameLoc,
@@ -1733,7 +1743,7 @@ public:
                  bool &OwnedDecl, bool &IsDependent,
                  SourceLocation ScopedEnumKWLoc,
                  bool ScopedEnumUsesClassTag, TypeResult UnderlyingType,
-                 bool IsTypeSpecifier, bool *SkipBody = nullptr);
+                 bool IsTypeSpecifier, SkipBodyInfo *SkipBody = nullptr);
 
   Decl *ActOnTemplatedFriendTag(Scope *S, SourceLocation FriendLoc,
                                 unsigned TagSpec, SourceLocation TagLoc,
@@ -1843,6 +1853,11 @@ public:
   bool CheckEnumUnderlyingType(TypeSourceInfo *TI);
   bool CheckEnumRedeclaration(SourceLocation EnumLoc, bool IsScoped,
                               QualType EnumUnderlyingTy, const EnumDecl *Prev);
+
+  /// Determine whether the body of an anonymous enumeration should be skipped.
+  /// \param II The name of the first enumerator.
+  SkipBodyInfo shouldSkipAnonEnumBody(Scope *S, IdentifierInfo *II,
+                                      SourceLocation IILoc);
 
   Decl *ActOnEnumConstant(Scope *S, Decl *EnumDecl, Decl *LastEnumConstant,
                           SourceLocation IdLoc, IdentifierInfo *Id,
@@ -2671,16 +2686,42 @@ public:
                                bool EnteringContext = false,
                                const ObjCObjectPointerType *OPT = nullptr);
 
+  /// \brief Process any TypoExprs in the given Expr and its children,
+  /// generating diagnostics as appropriate and returning a new Expr if there
+  /// were typos that were all successfully corrected and ExprError if one or
+  /// more typos could not be corrected.
+  ///
+  /// \param E The Expr to check for TypoExprs.
+  ///
+  /// \param InitDecl A VarDecl to avoid because the Expr being corrected is its
+  /// initializer.
+  ///
+  /// \param Filter A function applied to a newly rebuilt Expr to determine if
+  /// it is an acceptable/usable result from a single combination of typo
+  /// corrections. As long as the filter returns ExprError, different
+  /// combinations of corrections will be tried until all are exhausted.
   ExprResult
-  CorrectDelayedTyposInExpr(Expr *E,
+  CorrectDelayedTyposInExpr(Expr *E, VarDecl *InitDecl = nullptr,
                             llvm::function_ref<ExprResult(Expr *)> Filter =
                                 [](Expr *E) -> ExprResult { return E; });
 
   ExprResult
-  CorrectDelayedTyposInExpr(ExprResult ER,
+  CorrectDelayedTyposInExpr(Expr *E,
+                            llvm::function_ref<ExprResult(Expr *)> Filter) {
+    return CorrectDelayedTyposInExpr(E, nullptr, Filter);
+  }
+
+  ExprResult
+  CorrectDelayedTyposInExpr(ExprResult ER, VarDecl *InitDecl = nullptr,
                             llvm::function_ref<ExprResult(Expr *)> Filter =
                                 [](Expr *E) -> ExprResult { return E; }) {
     return ER.isInvalid() ? ER : CorrectDelayedTyposInExpr(ER.get(), Filter);
+  }
+
+  ExprResult
+  CorrectDelayedTyposInExpr(ExprResult ER,
+                            llvm::function_ref<ExprResult(Expr *)> Filter) {
+    return CorrectDelayedTyposInExpr(ER, nullptr, Filter);
   }
 
   void diagnoseTypo(const TypoCorrection &Correction,
@@ -4794,8 +4835,12 @@ public:
   /// ActOnLambdaExpr - This is called when the body of a lambda expression
   /// was successfully completed.
   ExprResult ActOnLambdaExpr(SourceLocation StartLoc, Stmt *Body,
-                             Scope *CurScope,
-                             bool IsInstantiation = false);
+                             Scope *CurScope);
+
+  /// \brief Complete a lambda-expression having processed and attached the
+  /// lambda body.
+  ExprResult BuildLambdaExpr(SourceLocation StartLoc, SourceLocation EndLoc,
+                             sema::LambdaScopeInfo *LSI);
 
   /// \brief Define the "body" of the conversion from a lambda object to a
   /// function pointer.
@@ -5352,7 +5397,7 @@ public:
                                 SourceLocation FriendLoc,
                                 unsigned NumOuterTemplateParamLists,
                             TemplateParameterList **OuterTemplateParamLists,
-                                bool *SkipBody = nullptr);
+                                SkipBodyInfo *SkipBody = nullptr);
 
   void translateTemplateArguments(const ASTTemplateArgsPtr &In,
                                   TemplateArgumentListInfo &Out);
@@ -7419,6 +7464,12 @@ public:
                            SourceLocation Loc);
   /// \brief Called on end of data sharing attribute block.
   void EndOpenMPDSABlock(Stmt *CurDirective);
+
+  /// \brief Check if the current region is an OpenMP loop region and if it is,
+  /// mark loop control variable, used in \p Init for loop initialization, as
+  /// private by default.
+  /// \param Init First part of the for loop.
+  void ActOnOpenMPLoopInitialization(SourceLocation ForLoc, Stmt *Init);
 
   // OpenMP directives and clauses.
   /// \brief Called on correct id-expression from the '#pragma omp

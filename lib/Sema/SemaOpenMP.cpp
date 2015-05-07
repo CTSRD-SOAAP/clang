@@ -82,10 +82,12 @@ private:
   };
   typedef llvm::SmallDenseMap<VarDecl *, DSAInfo, 64> DeclSAMapTy;
   typedef llvm::SmallDenseMap<VarDecl *, DeclRefExpr *, 64> AlignedMapTy;
+  typedef llvm::DenseSet<VarDecl *> LoopControlVariablesSetTy;
 
   struct SharingMapTy {
     DeclSAMapTy SharingMap;
     AlignedMapTy AlignedMap;
+    LoopControlVariablesSetTy LCVSet;
     DefaultDataSharingAttributes DefaultAttr;
     SourceLocation DefaultAttrLoc;
     OpenMPDirectiveKind Directive;
@@ -93,16 +95,19 @@ private:
     Scope *CurScope;
     SourceLocation ConstructLoc;
     bool OrderedRegion;
+    unsigned CollapseNumber;
     SourceLocation InnerTeamsRegionLoc;
     SharingMapTy(OpenMPDirectiveKind DKind, DeclarationNameInfo Name,
                  Scope *CurScope, SourceLocation Loc)
-        : SharingMap(), AlignedMap(), DefaultAttr(DSA_unspecified),
+        : SharingMap(), AlignedMap(), LCVSet(), DefaultAttr(DSA_unspecified),
           Directive(DKind), DirectiveName(std::move(Name)), CurScope(CurScope),
-          ConstructLoc(Loc), OrderedRegion(false), InnerTeamsRegionLoc() {}
+          ConstructLoc(Loc), OrderedRegion(false), CollapseNumber(1),
+          InnerTeamsRegionLoc() {}
     SharingMapTy()
-        : SharingMap(), AlignedMap(), DefaultAttr(DSA_unspecified),
+        : SharingMap(), AlignedMap(), LCVSet(), DefaultAttr(DSA_unspecified),
           Directive(OMPD_unknown), DirectiveName(), CurScope(nullptr),
-          ConstructLoc(), OrderedRegion(false), InnerTeamsRegionLoc() {}
+          ConstructLoc(), OrderedRegion(false), CollapseNumber(1),
+          InnerTeamsRegionLoc() {}
   };
 
   typedef SmallVector<SharingMapTy, 64> StackTy;
@@ -136,6 +141,12 @@ public:
   /// add it and return NULL; otherwise return previous occurrence's expression
   /// for diagnostics.
   DeclRefExpr *addUniqueAligned(VarDecl *D, DeclRefExpr *NewDE);
+
+  /// \brief Register specified variable as loop control variable.
+  void addLoopControlVariable(VarDecl *D);
+  /// \brief Check if the specified variable is a loop control variable for
+  /// current region.
+  bool isLoopControlVariable(VarDecl *D);
 
   /// \brief Adds explicit data sharing attribute to the specified declaration.
   void addDSA(VarDecl *D, DeclRefExpr *E, OpenMPClauseKind A);
@@ -207,6 +218,13 @@ public:
     if (Stack.size() > 2)
       return Stack[Stack.size() - 2].OrderedRegion;
     return false;
+  }
+
+  /// \brief Set collapse value for the region.
+  void setCollapseNumber(unsigned Val) { Stack.back().CollapseNumber = Val; }
+  /// \brief Return collapse value for region.
+  unsigned getCollapseNumber() const {
+    return Stack.back().CollapseNumber;
   }
 
   /// \brief Marks current target region as one with closely nested teams
@@ -356,6 +374,18 @@ DeclRefExpr *DSAStackTy::addUniqueAligned(VarDecl *D, DeclRefExpr *NewDE) {
   return nullptr;
 }
 
+void DSAStackTy::addLoopControlVariable(VarDecl *D) {
+  assert(Stack.size() > 1 && "Data-sharing attributes stack is empty");
+  D = D->getCanonicalDecl();
+  Stack.back().LCVSet.insert(D);
+}
+
+bool DSAStackTy::isLoopControlVariable(VarDecl *D) {
+  assert(Stack.size() > 1 && "Data-sharing attributes stack is empty");
+  D = D->getCanonicalDecl();
+  return Stack.back().LCVSet.count(D) > 0;
+}
+
 void DSAStackTy::addDSA(VarDecl *D, DeclRefExpr *E, OpenMPClauseKind A) {
   D = D->getCanonicalDecl();
   if (A == OMPC_threadprivate) {
@@ -396,9 +426,15 @@ DSAStackTy::DSAVarData DSAStackTy::getTopDSA(VarDecl *D, bool FromParent) {
   // in a Construct, C/C++, predetermined, p.1]
   //  Variables appearing in threadprivate directives are threadprivate.
   if (D->getTLSKind() != VarDecl::TLS_None ||
-      D->getStorageClass() == SC_Register) {
-    DVar.CKind = OMPC_threadprivate;
-    return DVar;
+      (D->getStorageClass() == SC_Register && D->hasAttr<AsmLabelAttr>() &&
+       !D->isLocalVarDecl())) {
+    addDSA(D,
+           DeclRefExpr::Create(SemaRef.getASTContext(),
+                               NestedNameSpecifierLoc(), SourceLocation(), D,
+                               /*RefersToEnclosingVariableOrCapture=*/false,
+                               D->getLocation(),
+                               D->getType().getNonReferenceType(), VK_LValue),
+           OMPC_threadprivate);
   }
   if (Stack[0].SharingMap.count(D)) {
     DVar.RefExpr = Stack[0].SharingMap[D].RefExpr;
@@ -556,6 +592,8 @@ bool Sema::IsOpenMPCapturedVar(VarDecl *VD) {
   assert(LangOpts.OpenMP && "OpenMP is not allowed");
   VD = VD->getCanonicalDecl();
   if (DSAStack->getCurrentDirective() != OMPD_unknown) {
+    if (DSAStack->isLoopControlVariable(VD))
+      return true;
     auto DVarPrivate = DSAStack->getTopDSA(VD, /*FromParent=*/false);
     if (DVarPrivate.CKind != OMPC_unknown && isOpenMPPrivate(DVarPrivate.CKind))
       return true;
@@ -853,7 +891,8 @@ Sema::CheckOMPThreadPrivateDecl(SourceLocation Loc, ArrayRef<Expr *> VarList) {
 
     // Check if this is a TLS variable.
     if (VD->getTLSKind() != VarDecl::TLS_None ||
-        VD->getStorageClass() == SC_Register) {
+        (VD->getStorageClass() == SC_Register && VD->hasAttr<AsmLabelAttr>() &&
+         !VD->isLocalVarDecl())) {
       Diag(ILoc, diag::err_omp_var_thread_local)
           << VD << ((VD->getTLSKind() != VarDecl::TLS_None) ? 0 : 1);
       bool IsDecl =
@@ -1956,7 +1995,7 @@ public:
         TestIsStrictOp(false), SubtractStep(false) {}
   /// \brief Check init-expr for canonical loop form and save loop counter
   /// variable - #Var and its initialization value - #LB.
-  bool CheckInit(Stmt *S);
+  bool CheckInit(Stmt *S, bool EmitDiags = true);
   /// \brief Check test-expr for canonical form, save upper-bound (#UB), flags
   /// for less/greater and for strict/non-strict comparison.
   bool CheckCond(Expr *S);
@@ -2096,7 +2135,7 @@ bool OpenMPIterationSpaceChecker::SetStep(Expr *NewStep, bool Subtract) {
   return false;
 }
 
-bool OpenMPIterationSpaceChecker::CheckInit(Stmt *S) {
+bool OpenMPIterationSpaceChecker::CheckInit(Stmt *S, bool EmitDiags) {
   // Check init-expr for canonical loop form and save loop counter
   // variable - #Var and its initialization value - #LB.
   // OpenMP [2.6] Canonical loop form. init-expr may be one of the following:
@@ -2106,7 +2145,9 @@ bool OpenMPIterationSpaceChecker::CheckInit(Stmt *S) {
   //   pointer-type var = lb
   //
   if (!S) {
-    SemaRef.Diag(DefaultLoc, diag::err_omp_loop_not_canonical_init);
+    if (EmitDiags) {
+      SemaRef.Diag(DefaultLoc, diag::err_omp_loop_not_canonical_init);
+    }
     return true;
   }
   InitSrcRange = S->getSourceRange();
@@ -2122,7 +2163,7 @@ bool OpenMPIterationSpaceChecker::CheckInit(Stmt *S) {
       if (auto Var = dyn_cast_or_null<VarDecl>(DS->getSingleDecl())) {
         if (Var->hasInit()) {
           // Accept non-canonical init form here but emit ext. warning.
-          if (Var->getInitStyle() != VarDecl::CInit)
+          if (Var->getInitStyle() != VarDecl::CInit && EmitDiags)
             SemaRef.Diag(S->getLocStart(),
                          diag::ext_omp_loop_not_canonical_init)
                 << S->getSourceRange();
@@ -2136,8 +2177,10 @@ bool OpenMPIterationSpaceChecker::CheckInit(Stmt *S) {
         return SetVarAndLB(dyn_cast<VarDecl>(DRE->getDecl()), DRE,
                            CE->getArg(1));
 
-  SemaRef.Diag(S->getLocStart(), diag::err_omp_loop_not_canonical_init)
-      << S->getSourceRange();
+  if (EmitDiags) {
+    SemaRef.Diag(S->getLocStart(), diag::err_omp_loop_not_canonical_init)
+        << S->getSourceRange();
+  }
   return true;
 }
 
@@ -2398,7 +2441,8 @@ Expr *OpenMPIterationSpaceChecker::BuildPreCond(Scope *S, Expr *Cond) const {
 /// \brief Build reference expression to the counter be used for codegen.
 Expr *OpenMPIterationSpaceChecker::BuildCounterVar() const {
   return DeclRefExpr::Create(SemaRef.Context, NestedNameSpecifierLoc(),
-                             GetIncrementSrcRange().getBegin(), Var, false,
+                             GetIncrementSrcRange().getBegin(), Var,
+                             /*RefersToEnclosingVariableOrCapture=*/true,
                              DefaultLoc, Var->getType(), VK_LValue);
 }
 
@@ -2433,6 +2477,20 @@ struct LoopIterationSpace {
 };
 
 } // namespace
+
+void Sema::ActOnOpenMPLoopInitialization(SourceLocation ForLoc, Stmt *Init) {
+  assert(getLangOpts().OpenMP && "OpenMP is not active.");
+  assert(Init && "Expected loop in canonical form.");
+  unsigned CollapseIteration = DSAStack->getCollapseNumber();
+  if (CollapseIteration > 0 &&
+      isOpenMPLoopDirective(DSAStack->getCurrentDirective())) {
+    OpenMPIterationSpaceChecker ISC(*this, ForLoc);
+    if (!ISC.CheckInit(Init, /*EmitDiags=*/false)) {
+      DSAStack->addLoopControlVariable(ISC.GetLoopVar());
+    }
+    DSAStack->setCollapseNumber(CollapseIteration - 1);
+  }
+}
 
 /// \brief Called on a for stmt to check and extract its iteration space
 /// for further processing (such as collapsing).
@@ -2520,24 +2578,18 @@ static bool CheckOpenMPIterationSpace(
     SemaRef.Diag(Init->getLocStart(), diag::err_omp_loop_var_dsa)
         << getOpenMPClauseName(DVar.CKind) << getOpenMPDirectiveName(DKind)
         << getOpenMPClauseName(PredeterminedCKind);
-    ReportOriginalDSA(SemaRef, &DSA, Var, DVar, true);
+    if (DVar.RefExpr == nullptr)
+      DVar.CKind = PredeterminedCKind;
+    ReportOriginalDSA(SemaRef, &DSA, Var, DVar, /*IsLoopIterVar=*/true);
     HasErrors = true;
   } else if (LoopVarRefExpr != nullptr) {
     // Make the loop iteration variable private (for worksharing constructs),
     // linear (for simd directives with the only one associated loop) or
     // lastprivate (for simd directives with several collapsed loops).
-    // FIXME: the next check and error message must be removed once the
-    // capturing of global variables in loops is fixed.
     if (DVar.CKind == OMPC_unknown)
       DVar = DSA.hasDSA(Var, isOpenMPPrivate, MatchesAlways(),
                         /*FromParent=*/false);
-    if (!Var->hasLocalStorage() && DVar.CKind == OMPC_unknown) {
-      SemaRef.Diag(Init->getLocStart(), diag::err_omp_global_loop_var_dsa)
-          << getOpenMPClauseName(PredeterminedCKind)
-          << getOpenMPDirectiveName(DKind);
-      HasErrors = true;
-    } else
-      DSA.addDSA(Var, LoopVarRefExpr, PredeterminedCKind);
+    DSA.addDSA(Var, LoopVarRefExpr, PredeterminedCKind);
   }
 
   assert(isOpenMPLoopDirective(DKind) && "DSA for non-loop vars");
@@ -2997,11 +3049,11 @@ CheckOpenMPLoop(OpenMPDirectiveKind DKind, Expr *NestedLoopCountExpr,
 }
 
 static Expr *GetCollapseNumberExpr(ArrayRef<OMPClause *> Clauses) {
-  auto CollapseFilter = [](const OMPClause *C) -> bool {
+  auto &&CollapseFilter = [](const OMPClause *C) -> bool {
     return C->getClauseKind() == OMPC_collapse;
   };
   OMPExecutableDirective::filtered_clause_iterator<decltype(CollapseFilter)> I(
-      Clauses, CollapseFilter);
+      Clauses, std::move(CollapseFilter));
   if (I)
     return cast<OMPCollapseClause>(*I)->getNumForLoops();
   return nullptr;
@@ -3456,7 +3508,7 @@ bool OpenMPAtomicUpdateChecker::checkBinaryOperation(
     return true;
   } else if (SemaRef.CurContext->isDependentContext())
     E = X = UpdateExpr = nullptr;
-  return false;
+  return ErrorFound != NoError;
 }
 
 bool OpenMPAtomicUpdateChecker::checkStatement(Stmt *S, unsigned DiagId,
@@ -3528,7 +3580,7 @@ bool OpenMPAtomicUpdateChecker::checkStatement(Stmt *S, unsigned DiagId,
     return true;
   } else if (SemaRef.CurContext->isDependentContext())
     E = X = UpdateExpr = nullptr;
-  if (E && X) {
+  if (ErrorFound == NoError && E && X) {
     // Build an update expression of form 'OpaqueValueExpr(x) binop
     // OpaqueValueExpr(expr)' or 'OpaqueValueExpr(expr) binop
     // OpaqueValueExpr(x)' and then cast it to the type of the 'x' expression.
@@ -3547,7 +3599,7 @@ bool OpenMPAtomicUpdateChecker::checkStatement(Stmt *S, unsigned DiagId,
       return true;
     UpdateExpr = Update.get();
   }
-  return false;
+  return ErrorFound != NoError;
 }
 
 StmtResult Sema::ActOnOpenMPAtomicDirective(ArrayRef<OMPClause *> Clauses,
@@ -3861,7 +3913,7 @@ StmtResult Sema::ActOnOpenMPAtomicDirective(ArrayRef<OMPClause *> Clauses,
               E = Checker.getExpr();
               UE = Checker.getUpdateExpr();
               IsXLHSInRHSPart = Checker.isXLHSInRHSPart();
-              IsPostfixUpdate = Checker.isPostfixUpdate();
+              IsPostfixUpdate = true;
             }
           }
           if (!IsUpdateExprFound) {
@@ -3891,7 +3943,7 @@ StmtResult Sema::ActOnOpenMPAtomicDirective(ArrayRef<OMPClause *> Clauses,
                 E = Checker.getExpr();
                 UE = Checker.getUpdateExpr();
                 IsXLHSInRHSPart = Checker.isXLHSInRHSPart();
-                IsPostfixUpdate = Checker.isPostfixUpdate();
+                IsPostfixUpdate = false;
               }
             }
           }
@@ -4209,6 +4261,9 @@ ExprResult Sema::VerifyPositiveIntegerConstantInClause(Expr *E,
     Diag(E->getExprLoc(), diag::warn_omp_alignment_not_power_of_two)
         << E->getSourceRange();
     return ExprError();
+  }
+  if (CKind == OMPC_collapse) {
+    DSAStack->setCollapseNumber(Result.getExtValue());
   }
   return ICE;
 }
@@ -5621,7 +5676,7 @@ OMPClause *Sema::ActOnOpenMPReductionClause(
         BuildBinOp(DSAStack->getCurScope(), ReductionId.getLocStart(), BOK,
                    LHSDRE, RHSDRE);
     if (ReductionOp.isUsable()) {
-      if (BOK != BO_LOr && BOK != BO_LAnd) {
+      if (BOK != BO_LT && BOK != BO_GT) {
         ReductionOp =
             BuildBinOp(DSAStack->getCurScope(), ReductionId.getLocStart(),
                        BO_Assign, LHSDRE, ReductionOp.get());

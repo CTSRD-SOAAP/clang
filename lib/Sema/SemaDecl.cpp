@@ -16,7 +16,6 @@
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/ASTLambda.h"
-#include "clang/AST/ASTMutationListener.h"
 #include "clang/AST/CXXInheritance.h"
 #include "clang/AST/CharUnits.h"
 #include "clang/AST/CommentDiagnostic.h"
@@ -1749,7 +1748,7 @@ NamedDecl *Sema::LazilyCreateBuiltin(IdentifierInfo *II, unsigned ID,
                                            Loc, Loc, II, R, /*TInfo=*/nullptr,
                                            SC_Extern,
                                            false,
-                                           /*hasPrototype=*/true);
+                                           R->isFunctionProtoType());
   New->setImplicit();
 
   // Create Decl objects for each parameter, adding them to the
@@ -1974,9 +1973,7 @@ void Sema::MergeTypedefNameDecl(TypedefNameDecl *New, LookupResult &OldDecls) {
         New->setTypeSourceInfo(OldTD->getTypeSourceInfo());
 
       // Make the old tag definition visible.
-      if (auto *Listener = getASTMutationListener())
-        Listener->RedefinedHiddenDefinition(Hidden, NewTag->getLocation());
-      Hidden->setHidden(false);
+      makeMergedDefinitionVisible(Hidden, NewTag->getLocation());
     }
   }
 
@@ -5753,6 +5750,7 @@ Sema::ActOnVariableDeclarator(Scope *S, Declarator &D, DeclContext *DC,
   if (IsLocalExternDecl)
     NewVD->setLocalExternDecl();
 
+  bool EmitTLSUnsupportedError = false;
   if (DeclSpec::TSCS TSCS = D.getDeclSpec().getThreadStorageClassSpec()) {
     // C++11 [dcl.stc]p4:
     //   When thread_local is applied to a variable of block scope the
@@ -5767,10 +5765,20 @@ Sema::ActOnVariableDeclarator(Scope *S, Declarator &D, DeclContext *DC,
       Diag(D.getDeclSpec().getThreadStorageClassSpecLoc(),
            diag::err_thread_non_global)
         << DeclSpec::getSpecifierName(TSCS);
-    else if (!Context.getTargetInfo().isTLSSupported())
-      Diag(D.getDeclSpec().getThreadStorageClassSpecLoc(),
-           diag::err_thread_unsupported);
-    else
+    else if (!Context.getTargetInfo().isTLSSupported()) {
+      if (getLangOpts().CUDA) {
+        // Postpone error emission until we've collected attributes required to
+        // figure out whether it's a host or device variable and whether the
+        // error should be ignored.
+        EmitTLSUnsupportedError = true;
+        // We still need to mark the variable as TLS so it shows up in AST with
+        // proper storage class for other tools to use even if we're not going
+        // to emit any code for it.
+        NewVD->setTSCSpec(TSCS);
+      } else
+        Diag(D.getDeclSpec().getThreadStorageClassSpecLoc(),
+             diag::err_thread_unsupported);
+    } else
       NewVD->setTSCSpec(TSCS);
   }
 
@@ -5819,6 +5827,9 @@ Sema::ActOnVariableDeclarator(Scope *S, Declarator &D, DeclContext *DC,
   ProcessDeclAttributes(S, NewVD, D);
 
   if (getLangOpts().CUDA) {
+    if (EmitTLSUnsupportedError && DeclAttrsMatchCUDAMode(getLangOpts(), NewVD))
+      Diag(D.getDeclSpec().getThreadStorageClassSpecLoc(),
+           diag::err_thread_unsupported);
     // CUDA B.2.5: "__shared__ and __constant__ variables have implied static
     // storage [duration]."
     if (SC == SC_None && S->getFnParent() != nullptr &&
@@ -8252,6 +8263,12 @@ void Sema::CheckMain(FunctionDecl* FD, const DeclSpec& DS) {
 
   bool HasExtraParameters = (nparams > 3);
 
+  if (FTP->isVariadic()) {
+    Diag(FD->getLocation(), diag::ext_variadic_main);
+    // FIXME: if we had information about the location of the ellipsis, we
+    // could add a FixIt hint to remove it as a parameter.
+  }
+
   // Darwin passes an undocumented fourth argument of type char**.  If
   // other platforms start sprouting these, the logic below will start
   // getting shifty.
@@ -8690,7 +8707,7 @@ void Sema::AddInitializerToDecl(Decl *RealDecl, Expr *Init,
   // If there is no declaration, there was an error parsing it.  Just ignore
   // the initializer.
   if (!RealDecl || RealDecl->isInvalidDecl()) {
-    CorrectDelayedTyposInExpr(Init);
+    CorrectDelayedTyposInExpr(Init, dyn_cast_or_null<VarDecl>(RealDecl));
     return;
   }
 
@@ -8724,11 +8741,12 @@ void Sema::AddInitializerToDecl(Decl *RealDecl, Expr *Init,
     // Attempt typo correction early so that the type of the init expression can
     // be deduced based on the chosen correction:if the original init contains a
     // TypoExpr.
-    ExprResult Res = CorrectDelayedTyposInExpr(Init);
+    ExprResult Res = CorrectDelayedTyposInExpr(Init, VDecl);
     if (!Res.isUsable()) {
       RealDecl->setInvalidDecl();
       return;
     }
+
     if (Res.get() != Init) {
       Init = Res.get();
       if (CXXDirectInit)
@@ -8947,8 +8965,8 @@ void Sema::AddInitializerToDecl(Decl *RealDecl, Expr *Init,
 
     // Try to correct any TypoExprs in the initialization arguments.
     for (size_t Idx = 0; Idx < Args.size(); ++Idx) {
-      ExprResult Res =
-          CorrectDelayedTyposInExpr(Args[Idx], [this, Entity, Kind](Expr *E) {
+      ExprResult Res = CorrectDelayedTyposInExpr(
+          Args[Idx], VDecl, [this, Entity, Kind](Expr *E) {
             InitializationSequence Init(*this, Entity, Kind, MultiExprArg(E));
             return Init.Failed() ? ExprError() : E;
           });
@@ -10571,6 +10589,23 @@ Decl *Sema::ActOnFinishFunctionBody(Decl *dcl, Stmt *Body,
         Context.adjustDeducedFunctionResultType(
             FD, SubstAutoType(ResultType.getType(), Context.VoidTy));
       }
+    } else if (getLangOpts().CPlusPlus11 && isLambdaCallOperator(FD)) {
+      auto *LSI = getCurLambda();
+      if (LSI->HasImplicitReturnType) {
+        deduceClosureReturnType(*LSI);
+
+        // C++11 [expr.prim.lambda]p4:
+        //   [...] if there are no return statements in the compound-statement
+        //   [the deduced type is] the type void
+        QualType RetType =
+            LSI->ReturnType.isNull() ? Context.VoidTy : LSI->ReturnType;
+
+        // Update the return type to the deduced type.
+        const FunctionProtoType *Proto =
+            FD->getType()->getAs<FunctionProtoType>();
+        FD->setType(Context.getFunctionType(RetType, Proto->getParamTypes(),
+                                            Proto->getExtProtoInfo()));
+      }
     }
 
     // The only way to be included in UndefinedButUsed is if there is an
@@ -11273,8 +11308,8 @@ static FixItHint createFriendTagNNSFixIt(Sema &SemaRef, NamedDecl *ND, Scope *S,
 /// \param IsTypeSpecifier \c true if this is a type-specifier (or
 /// trailing-type-specifier) other than one in an alias-declaration.
 ///
-/// \param SkipBody If non-null, will be set to true if the caller should skip
-/// the definition of this tag, and treat it as if it were a declaration.
+/// \param SkipBody If non-null, will be set to indicate if the caller should
+/// skip the definition of this tag and treat it as if it were a declaration.
 Decl *Sema::ActOnTag(Scope *S, unsigned TagSpec, TagUseKind TUK,
                      SourceLocation KWLoc, CXXScopeSpec &SS,
                      IdentifierInfo *Name, SourceLocation NameLoc,
@@ -11285,7 +11320,7 @@ Decl *Sema::ActOnTag(Scope *S, unsigned TagSpec, TagUseKind TUK,
                      SourceLocation ScopedEnumKWLoc,
                      bool ScopedEnumUsesClassTag,
                      TypeResult UnderlyingType,
-                     bool IsTypeSpecifier, bool *SkipBody) {
+                     bool IsTypeSpecifier, SkipBodyInfo *SkipBody) {
   // If this is not a definition, it must have a name.
   IdentifierInfo *OrigName = Name;
   assert((Name != nullptr || TUK == TUK_Definition) &&
@@ -11595,6 +11630,10 @@ Decl *Sema::ActOnTag(Scope *S, unsigned TagSpec, TagUseKind TUK,
     }
   }
 
+  // If we have a known previous declaration to use, then use it.
+  if (Previous.empty() && SkipBody && SkipBody->Previous)
+    Previous.addDecl(SkipBody->Previous);
+
   if (!Previous.empty()) {
     NamedDecl *PrevDecl = Previous.getFoundDecl();
     NamedDecl *DirectPrevDecl =
@@ -11736,10 +11775,8 @@ Decl *Sema::ActOnTag(Scope *S, unsigned TagSpec, TagUseKind TUK,
                 // assume that this definition is identical to the hidden one
                 // we already have. Make the existing definition visible and
                 // use it in place of this one.
-                *SkipBody = true;
-                if (auto *Listener = getASTMutationListener())
-                  Listener->RedefinedHiddenDefinition(Hidden, KWLoc);
-                Hidden->setHidden(false);
+                SkipBody->ShouldSkip = true;
+                makeMergedDefinitionVisible(Hidden, KWLoc);
                 return Def;
               } else if (!IsExplicitSpecializationAfterInstantiation) {
                 // A redeclaration in function prototype scope in C isn't
@@ -12475,8 +12512,10 @@ FieldDecl *Sema::CheckFieldDecl(DeclarationName Name, QualType T,
     InvalidDecl = true;
 
   bool ZeroWidth = false;
+  if (InvalidDecl)
+    BitWidth = nullptr;
   // If this is declared as a bit-field, check the bit-field.
-  if (!InvalidDecl && BitWidth) {
+  if (BitWidth) {
     BitWidth = VerifyBitField(Loc, II, T, Record->isMsStruct(Context), BitWidth,
                               &ZeroWidth).get();
     if (!BitWidth) {
@@ -13425,6 +13464,29 @@ EnumConstantDecl *Sema::CheckEnumConstant(EnumDecl *Enum,
                                   Val, EnumVal);
 }
 
+Sema::SkipBodyInfo Sema::shouldSkipAnonEnumBody(Scope *S, IdentifierInfo *II,
+                                                SourceLocation IILoc) {
+  if (!getLangOpts().Modules || !getLangOpts().CPlusPlus)
+    return SkipBodyInfo();
+
+  // We have an anonymous enum definition. Look up the first enumerator to
+  // determine if we should merge the definition with an existing one and
+  // skip the body.
+  NamedDecl *PrevDecl = LookupSingleName(S, II, IILoc, LookupOrdinaryName,
+                                         ForRedeclaration);
+  auto *PrevECD = dyn_cast_or_null<EnumConstantDecl>(PrevDecl);
+  NamedDecl *Hidden;
+  if (PrevECD &&
+      !hasVisibleDefinition(cast<NamedDecl>(PrevECD->getDeclContext()),
+                            &Hidden)) {
+    SkipBodyInfo Skip;
+    Skip.ShouldSkip = true;
+    Skip.Previous = Hidden;
+    return Skip;
+  }
+
+  return SkipBodyInfo();
+}
 
 Decl *Sema::ActOnEnumConstant(Scope *S, Decl *theEnumDecl, Decl *lastEnumConst,
                               SourceLocation IdLoc, IdentifierInfo *Id,
@@ -14049,8 +14111,7 @@ void Sema::ActOnModuleInclude(SourceLocation DirectiveLoc, Module *Mod) {
   checkModuleImportContext(*this, Mod, DirectiveLoc, CurContext);
 
   // FIXME: Should we synthesize an ImportDecl here?
-  getModuleLoader().makeModuleVisible(Mod, Module::AllVisible, DirectiveLoc,
-                                      /*Complain=*/true);
+  getModuleLoader().makeModuleVisible(Mod, Module::AllVisible, DirectiveLoc);
 }
 
 void Sema::createImplicitModuleImportForErrorRecovery(SourceLocation Loc,
@@ -14067,8 +14128,7 @@ void Sema::createImplicitModuleImportForErrorRecovery(SourceLocation Loc,
   Consumer.HandleImplicitImportDecl(ImportD);
 
   // Make the module visible.
-  getModuleLoader().makeModuleVisible(Mod, Module::AllVisible, Loc,
-                                      /*Complain=*/false);
+  getModuleLoader().makeModuleVisible(Mod, Module::AllVisible, Loc);
 }
 
 void Sema::ActOnPragmaRedefineExtname(IdentifierInfo* Name,

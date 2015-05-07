@@ -8,7 +8,11 @@
 #define HEADER
 
 // CHECK: [[IDENT_T_TY:%.+]] = type { i32, i32, i32, i32, i8* }
-// CHECK: [[IMPLICIT_BARRIER_LOC:@.+]] = private unnamed_addr constant %{{.+}} { i32 0, i32 66, i32 0, i32 0, i8*
+// CHECK-DAG: [[IMPLICIT_BARRIER_LOC:@.+]] = private unnamed_addr constant %{{.+}} { i32 0, i32 66, i32 0, i32 0, i8*
+// CHECK-DAG: [[I:@.+]] = global i8 1,
+// CHECK-DAG: [[J:@.+]] = global i8 2,
+// CHECK-DAG: [[K:@.+]] = global i8 3,
+
 // CHECK-LABEL: define {{.*void}} @{{.*}}without_schedule_clause{{.*}}(float* {{.+}}, float* {{.+}}, float* {{.+}}, float* {{.+}})
 void without_schedule_clause(float *a, float *b, float *c, float *d) {
 // CHECK: [[GTID:%.+]] = call i32 @__kmpc_global_thread_num([[IDENT_T_TY]]* [[DEFAULT_LOC:[@%].+]])
@@ -37,6 +41,7 @@ void without_schedule_clause(float *a, float *b, float *c, float *d) {
 // ... loop body ...
 // End of body: store into a[i]:
 // CHECK: store float [[RESULT:%.+]], float* {{%.+}}
+// CHECK-NOT: !llvm.mem.parallel_loop_access
     a[i] = b[i] * c[i] * d[i];
 // CHECK: [[IV1_2:%.+]] = load i32, i32* [[OMP_IV]]{{.*}}
 // CHECK-NEXT: [[ADD1_2:%.+]] = add nsw i32 [[IV1_2]], 1
@@ -77,6 +82,7 @@ void static_not_chunked(float *a, float *b, float *c, float *d) {
 // ... loop body ...
 // End of body: store into a[i]:
 // CHECK: store float [[RESULT:%.+]], float* {{%.+}}
+// CHECK-NOT: !llvm.mem.parallel_loop_access
     a[i] = b[i] * c[i] * d[i];
 // CHECK: [[IV1_2:%.+]] = load i32, i32* [[OMP_IV]]{{.*}}
 // CHECK-NEXT: [[ADD1_2:%.+]] = add nsw i32 [[IV1_2]], 1
@@ -125,6 +131,7 @@ void static_chunked(float *a, float *b, float *c, float *d) {
 // ... loop body ...
 // End of body: store into a[i]:
 // CHECK: store float [[RESULT:%.+]], float* {{%.+}}
+// CHECK-NOT: !llvm.mem.parallel_loop_access
     a[i] = b[i] * c[i] * d[i];
 // CHECK: [[IV1_2:%.+]] = load i32, i32* [[OMP_IV]]{{.*}}
 // CHECK-NEXT: [[ADD1_2:%.+]] = add i32 [[IV1_2]], 1
@@ -176,7 +183,7 @@ void dynamic1(float *a, float *b, float *c, float *d) {
 // CHECK-NEXT: store i64 [[CALC_I_2]], i64* [[LC_I:.+]]
 // ... loop body ...
 // End of body: store into a[i]:
-// CHECK: store float [[RESULT:%.+]], float* {{%.+}}
+// CHECK: store float [[RESULT:%.+]], float* {{%.+}}!llvm.mem.parallel_loop_access
     a[i] = b[i] * c[i] * d[i];
 // CHECK: [[IV1_2:%.+]] = load i64, i64* [[OMP_IV]]{{.*}}
 // CHECK-NEXT: [[ADD1_2:%.+]] = add i64 [[IV1_2]], 1
@@ -217,7 +224,7 @@ void guided7(float *a, float *b, float *c, float *d) {
 // CHECK-NEXT: store i64 [[CALC_I_2]], i64* [[LC_I:.+]]
 // ... loop body ...
 // End of body: store into a[i]:
-// CHECK: store float [[RESULT:%.+]], float* {{%.+}}
+// CHECK: store float [[RESULT:%.+]], float* {{%.+}}!llvm.mem.parallel_loop_access
     a[i] = b[i] * c[i] * d[i];
 // CHECK: [[IV1_2:%.+]] = load i64, i64* [[OMP_IV]]{{.*}}
 // CHECK-NEXT: [[ADD1_2:%.+]] = add i64 [[IV1_2]], 1
@@ -262,6 +269,7 @@ void test_auto(float *a, float *b, float *c, float *d) {
 // ... loop body ...
 // End of body: store into a[i]:
 // CHECK: store float [[RESULT:%.+]], float* {{%.+}}
+// CHECK-NOT: !llvm.mem.parallel_loop_access
     a[i] = b[i] * c[i] * d[i];
 // CHECK: [[IV1_2:%.+]] = load i64, i64* [[OMP_IV]]{{.*}}
 // CHECK-NEXT: [[ADD1_2:%.+]] = add nsw i64 [[IV1_2]], 1
@@ -303,6 +311,7 @@ void runtime(float *a, float *b, float *c, float *d) {
 // ... loop body ...
 // End of body: store into a[i]:
 // CHECK: store float [[RESULT:%.+]], float* {{%.+}}
+// CHECK-NOT: !llvm.mem.parallel_loop_access
     a[i] = b[i] * c[i] * d[i];
 // CHECK: [[IV1_2:%.+]] = load i32, i32* [[OMP_IV]]{{.*}}
 // CHECK-NEXT: [[ADD1_2:%.+]] = add nsw i32 [[IV1_2]], 1
@@ -361,9 +370,45 @@ void parallel_for(float *a) {
     a[i] += foo();
 }
 // Check source line corresponds to "#pragma omp for schedule(static, 5)" above:
-// TERM_DEBUG-DAG: [[DBG_LOC_START]] = !MDLocation(line: [[@LINE-15]],
-// TERM_DEBUG-DAG: [[DBG_LOC_END]] = !MDLocation(line: [[@LINE-16]],
-// TERM_DEBUG-DAG: [[DBG_LOC_CANCEL]] = !MDLocation(line: [[@LINE-17]],
+// TERM_DEBUG-DAG: [[DBG_LOC_START]] = !DILocation(line: [[@LINE-15]],
+// TERM_DEBUG-DAG: [[DBG_LOC_END]] = !DILocation(line: [[@LINE-16]],
+// TERM_DEBUG-DAG: [[DBG_LOC_CANCEL]] = !DILocation(line: [[@LINE-17]],
+
+char i = 1, j = 2, k = 3;
+// CHECK-LABEL: for_with_global_lcv
+void for_with_global_lcv() {
+// CHECK: [[I_ADDR:%.+]] = alloca i8,
+// CHECK: [[J_ADDR:%.+]] = alloca i8,
+
+// CHECK: call void @__kmpc_for_static_init_4(
+// CHECK-NOT: [[I]]
+// CHECK: store i8 %{{.+}}, i8* [[I_ADDR]]
+// CHECK-NOT: [[I]]
+// CHECK: [[I_VAL:%.+]] = load i8, i8* [[I_ADDR]],
+// CHECK-NOT: [[I]]
+// CHECK: store i8 [[I_VAL]], i8* [[K]]
+// CHECK-NOT: [[I]]
+// CHECK: call void @__kmpc_for_static_fini(
+#pragma omp for
+  for (i = 0; i < 2; ++i) {
+    k = i;
+  }
+// CHECK: call void @__kmpc_for_static_init_4(
+// CHECK-NOT: [[J]]
+// CHECK: store i8 %{{.+}}, i8* [[J_ADDR]]
+// CHECK-NOT: [[J]]
+// CHECK: [[J_VAL:%.+]] = load i8, i8* [[J_ADDR]],
+// CHECK-NOT: [[J]]
+// CHECK: store i8 [[J_VAL]], i8* [[K]]
+// CHECK-NOT: [[J]]
+// CHECK: call void @__kmpc_for_static_fini(
+#pragma omp for collapse(2)
+  for (int i = 0; i < 2; ++i)
+  for (j = 0; j < 2; ++j) {
+    k = i;
+    k = j;
+  }
+}
 
 #endif // HEADER
 
