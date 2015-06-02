@@ -302,7 +302,7 @@ void UnwrappedLineParser::parseLevel(bool HasOpeningBrace) {
   } while (!eof());
 }
 
-void UnwrappedLineParser::calculateBraceTypes() {
+void UnwrappedLineParser::calculateBraceTypes(bool ExpectClassBody) {
   // We'll parse forward through the tokens until we hit
   // a closing brace or eof - note that getNextToken() will
   // parse macros, so this will magically work inside macro
@@ -325,6 +325,7 @@ void UnwrappedLineParser::calculateBraceTypes() {
 
     switch (Tok->Tok.getKind()) {
     case tok::l_brace:
+      Tok->BlockKind = BK_Unknown;
       LBraceStack.push_back(Tok);
       break;
     case tok::r_brace:
@@ -348,9 +349,11 @@ void UnwrappedLineParser::calculateBraceTypes() {
             //
             // We exclude + and - as they can be ObjC visibility modifiers.
             ProbablyBracedList =
-                NextTok->isOneOf(tok::comma, tok::semi, tok::period, tok::colon,
+                NextTok->isOneOf(tok::comma, tok::period, tok::colon,
                                  tok::r_paren, tok::r_square, tok::l_brace,
                                  tok::l_paren, tok::ellipsis) ||
+                (NextTok->is(tok::semi) &&
+                 (!ExpectClassBody || LBraceStack.size() != 1)) ||
                 (NextTok->isBinaryOperator() && !NextIsObjCMethod);
           }
           if (ProbablyBracedList) {
@@ -666,10 +669,13 @@ void UnwrappedLineParser::parseStructuralElement() {
   case tok::kw_asm:
     nextToken();
     if (FormatTok->is(tok::l_brace)) {
+      FormatTok->Type = TT_InlineASMBrace;
       nextToken();
       while (FormatTok && FormatTok->isNot(tok::eof)) {
         if (FormatTok->is(tok::r_brace)) {
+          FormatTok->Type = TT_InlineASMBrace;
           nextToken();
+          addUnwrappedLine();
           break;
         }
         FormatTok->Finalized = true;
@@ -860,7 +866,13 @@ void UnwrappedLineParser::parseStructuralElement() {
         bool FunctionLike = FormatTok->is(tok::l_paren);
         if (FunctionLike)
           parseParens();
-        if (FormatTok->NewlinesBefore > 0 &&
+
+        bool FollowedByNewline =
+            CommentsBeforeNextToken.empty()
+                ? FormatTok->NewlinesBefore > 0
+                : CommentsBeforeNextToken.front()->NewlinesBefore > 0;
+
+        if (FollowedByNewline &&
             (Text.size() >= 5 || FunctionLike) &&
             tokenCanStartNewLine(FormatTok->Tok) && Text == Text.upper()) {
           addUnwrappedLine();
@@ -870,6 +882,16 @@ void UnwrappedLineParser::parseStructuralElement() {
       break;
     }
     case tok::equal:
+      // Fat arrows (=>) have tok::TokenKind tok::equal but TokenType
+      // TT_JsFatArrow. The always start an expression or a child block if
+      // followed by a curly.
+      if (FormatTok->is(TT_JsFatArrow)) {
+        nextToken();
+        if (FormatTok->is(tok::l_brace))
+          parseChildBlock();
+        break;
+      }
+
       nextToken();
       if (FormatTok->Tok.is(tok::l_brace)) {
         parseBracedList();
@@ -994,15 +1016,23 @@ void UnwrappedLineParser::tryToParseJSFunction() {
 
   if (FormatTok->isNot(tok::l_paren))
     return;
-  nextToken();
-  while (FormatTok->isNot(tok::l_brace)) {
-    // Err on the side of caution in order to avoid consuming the full file in
-    // case of incomplete code.
-    if (!FormatTok->isOneOf(tok::identifier, tok::comma, tok::r_paren,
-                            tok::comment))
-      return;
+
+  // Parse formal parameter list.
+  parseParens();
+
+  if (FormatTok->is(tok::colon)) {
+    // Parse a type definition.
     nextToken();
+
+    // Eat the type declaration. For braced inline object types, balance braces,
+    // otherwise just parse until finding an l_brace for the function body.
+    if (FormatTok->is(tok::l_brace))
+      tryToParseBracedList();
+    else
+      while(FormatTok->isNot(tok::l_brace) && !eof())
+        nextToken();
   }
+
   parseChildBlock();
 }
 
@@ -1023,10 +1053,20 @@ bool UnwrappedLineParser::parseBracedList(bool ContinueOnSemicolons) {
   // FIXME: Once we have an expression parser in the UnwrappedLineParser,
   // replace this by using parseAssigmentExpression() inside.
   do {
-    if (Style.Language == FormatStyle::LK_JavaScript &&
-        FormatTok->is(Keywords.kw_function)) {
-      tryToParseJSFunction();
-      continue;
+    if (Style.Language == FormatStyle::LK_JavaScript) {
+      if (FormatTok->is(Keywords.kw_function)) {
+        tryToParseJSFunction();
+        continue;
+      }
+      if (FormatTok->is(TT_JsFatArrow)) {
+        nextToken();
+        // Fat arrows can be followed by simple expressions or by child blocks
+        // in curly braces.
+        if (FormatTok->is(tok::l_brace)){
+          parseChildBlock();
+          continue;
+        }
+      }
     }
     switch (FormatTok->Tok.getKind()) {
     case tok::caret:
@@ -1095,9 +1135,8 @@ void UnwrappedLineParser::parseParens() {
       tryToParseLambda();
       break;
     case tok::l_brace:
-      if (!tryToParseBracedList()) {
+      if (!tryToParseBracedList())
         parseChildBlock();
-      }
       break;
     case tok::at:
       nextToken();
@@ -1137,9 +1176,8 @@ void UnwrappedLineParser::parseSquare() {
       parseSquare();
       break;
     case tok::l_brace: {
-      if (!tryToParseBracedList()) {
+      if (!tryToParseBracedList())
         parseChildBlock();
-      }
       break;
     }
     case tok::at:
@@ -1562,8 +1600,13 @@ void UnwrappedLineParser::parseRecord() {
   // and thus rule out the record production in case there is no template
   // (this would still leave us with an ambiguity between template function
   // and class declarations).
-  if (FormatTok->Tok.is(tok::colon) || FormatTok->Tok.is(tok::less)) {
-    while (!eof() && FormatTok->Tok.isNot(tok::l_brace)) {
+  if (FormatTok->isOneOf(tok::colon, tok::less)) {
+    while (!eof()) {
+      if (FormatTok->is(tok::l_brace)) {
+        calculateBraceTypes(/*ExpectClassBody=*/true);
+        if (!tryToParseBracedList())
+          break;
+      }
       if (FormatTok->Tok.is(tok::semi))
         return;
       nextToken();
@@ -1664,14 +1707,19 @@ void UnwrappedLineParser::parseJavaScriptEs6ImportExport() {
   assert(FormatTok->isOneOf(Keywords.kw_import, tok::kw_export));
   nextToken();
 
-  if (FormatTok->isOneOf(tok::kw_const, tok::kw_class, Keywords.kw_function,
-                         Keywords.kw_var))
-    return; // Fall through to parsing the corresponding structure.
+  // Consume the "default" in "export default class/function".
+  if (FormatTok->is(tok::kw_default))
+    nextToken();
 
-  if (FormatTok->is(tok::kw_default)) {
-    nextToken(); // export default ..., fall through after eating 'default'.
+  // Consume "function" and "default function", so that these get parsed as
+  // free-standing JS functions, i.e. do not require a trailing semicolon.
+  if (FormatTok->is(Keywords.kw_function)) {
+    nextToken();
     return;
   }
+
+  if (FormatTok->isOneOf(tok::kw_const, tok::kw_class, Keywords.kw_var))
+    return; // Fall through to parsing the corresponding structure.
 
   if (FormatTok->is(tok::l_brace)) {
     FormatTok->BlockKind = BK_Block;
@@ -1714,15 +1762,12 @@ void UnwrappedLineParser::addUnwrappedLine() {
     if (CurrentLines == &Lines)
       printDebugInfo(*Line);
   });
-  CurrentLines->push_back(*Line);
+  CurrentLines->push_back(std::move(*Line));
   Line->Tokens.clear();
   if (CurrentLines == &Lines && !PreprocessorDirectives.empty()) {
-    for (SmallVectorImpl<UnwrappedLine>::iterator
-             I = PreprocessorDirectives.begin(),
-             E = PreprocessorDirectives.end();
-         I != E; ++I) {
-      CurrentLines->push_back(*I);
-    }
+    CurrentLines->append(
+        std::make_move_iterator(PreprocessorDirectives.begin()),
+        std::make_move_iterator(PreprocessorDirectives.end()));
     PreprocessorDirectives.clear();
   }
 }
@@ -1740,14 +1785,12 @@ void UnwrappedLineParser::flushComments(bool NewlineBeforeNext) {
            I = CommentsBeforeNextToken.begin(),
            E = CommentsBeforeNextToken.end();
        I != E; ++I) {
-    if (isOnNewLine(**I) && JustComments) {
+    if (isOnNewLine(**I) && JustComments)
       addUnwrappedLine();
-    }
     pushToken(*I);
   }
-  if (NewlineBeforeNext && JustComments) {
+  if (NewlineBeforeNext && JustComments)
     addUnwrappedLine();
-  }
   CommentsBeforeNextToken.clear();
 }
 
