@@ -911,6 +911,10 @@ void UnwrappedLineParser::parseStructuralElement() {
 }
 
 bool UnwrappedLineParser::tryToParseLambda() {
+  if (Style.Language != FormatStyle::LK_Cpp) {
+    nextToken();
+    return false;
+  }
   // FIXME: This is a dirty way to access the previous token. Find a better
   // solution.
   if (!Line->Tokens.empty() &&
@@ -949,7 +953,7 @@ bool UnwrappedLineParser::tryToParseLambda() {
       nextToken();
       break;
     case tok::arrow:
-      FormatTok->Type = TT_TrailingReturnArrow;
+      FormatTok->Type = TT_LambdaArrow;
       nextToken();
       break;
     default:

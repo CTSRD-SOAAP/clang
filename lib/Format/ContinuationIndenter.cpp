@@ -159,7 +159,8 @@ bool ContinuationIndenter::mustBreak(const LineState &State) {
   if (((Previous.is(TT_DictLiteral) && Previous.is(tok::l_brace)) ||
        Previous.is(TT_ArrayInitializerLSquare)) &&
       Style.ColumnLimit > 0 &&
-      getLengthToMatchingParen(Previous) + State.Column > getColumnLimit(State))
+      getLengthToMatchingParen(Previous) + State.Column - 1 >
+          getColumnLimit(State))
     return true;
   if (Current.is(TT_CtorInitializerColon) &&
       ((Style.AllowShortFunctionsOnASingleLine != FormatStyle::SFS_All) ||
@@ -328,7 +329,7 @@ void ContinuationIndenter::addTokenOnCurrentLine(LineState &State, bool DryRun,
       State.Column > getNewLineColumn(State))
     State.Stack.back().ContainsUnwrappedBuilder = true;
 
-  if (Current.is(TT_LambdaArrow))
+  if (Current.is(TT_LambdaArrow) && Style.Language == FormatStyle::LK_Java)
     State.Stack.back().NoLineBreak = true;
   if (Current.isMemberAccess() && Previous.is(tok::r_paren) &&
       (Previous.MatchingParen &&
@@ -462,6 +463,8 @@ unsigned ContinuationIndenter::addTokenOnNewLine(LineState &State,
   if (NextNonComment->is(tok::question) ||
       (PreviousNonComment && PreviousNonComment->is(tok::question)))
     State.Stack.back().BreakBeforeParameter = true;
+  if (Current.is(TT_BinaryOperator) && Current.CanBreakBefore)
+    State.Stack.back().BreakBeforeParameter = false;
 
   if (!DryRun) {
     unsigned Newlines = std::max(
