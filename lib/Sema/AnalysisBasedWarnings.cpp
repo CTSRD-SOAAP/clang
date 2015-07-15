@@ -130,11 +130,10 @@ public:
       return true;
 
     // Recurse to children.
-    for (ConstStmtRange SubStmts = E->children(); SubStmts; ++SubStmts)
-      if (*SubStmts)
-        if (const Expr *SubExpr = dyn_cast<Expr>(*SubStmts))
-          if (HasMacroID(SubExpr))
-            return true;
+    for (const Stmt *SubStmt : E->children())
+      if (const Expr *SubExpr = dyn_cast_or_null<Expr>(SubStmt))
+        if (HasMacroID(SubExpr))
+          return true;
 
     return false;
   }
@@ -574,28 +573,29 @@ namespace {
 /// ContainsReference - A visitor class to search for references to
 /// a particular declaration (the needle) within any evaluated component of an
 /// expression (recursively).
-class ContainsReference : public EvaluatedExprVisitor<ContainsReference> {
+class ContainsReference : public ConstEvaluatedExprVisitor<ContainsReference> {
   bool FoundReference;
   const DeclRefExpr *Needle;
 
 public:
-  ContainsReference(ASTContext &Context, const DeclRefExpr *Needle)
-    : EvaluatedExprVisitor<ContainsReference>(Context),
-      FoundReference(false), Needle(Needle) {}
+  typedef ConstEvaluatedExprVisitor<ContainsReference> Inherited;
 
-  void VisitExpr(Expr *E) {
+  ContainsReference(ASTContext &Context, const DeclRefExpr *Needle)
+    : Inherited(Context), FoundReference(false), Needle(Needle) {}
+
+  void VisitExpr(const Expr *E) {
     // Stop evaluating if we already have a reference.
     if (FoundReference)
       return;
 
-    EvaluatedExprVisitor<ContainsReference>::VisitExpr(E);
+    Inherited::VisitExpr(E);
   }
 
-  void VisitDeclRefExpr(DeclRefExpr *E) {
+  void VisitDeclRefExpr(const DeclRefExpr *E) {
     if (E == Needle)
       FoundReference = true;
     else
-      EvaluatedExprVisitor<ContainsReference>::VisitDeclRefExpr(E);
+      Inherited::VisitDeclRefExpr(E);
   }
 
   bool doesContainReference() const { return FoundReference; }
@@ -854,7 +854,7 @@ static bool DiagnoseUninitializedUse(Sema &S, const VarDecl *VD,
         return false;
 
       ContainsReference CR(S.Context, DRE);
-      CR.Visit(const_cast<Expr*>(Initializer));
+      CR.Visit(Initializer);
       if (CR.doesContainReference()) {
         S.Diag(DRE->getLocStart(),
                diag::warn_uninit_self_reference_in_init)

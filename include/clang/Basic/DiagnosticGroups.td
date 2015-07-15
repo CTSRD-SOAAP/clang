@@ -248,6 +248,10 @@ def MissingFieldInitializers : DiagGroup<"missing-field-initializers">;
 def ModuleBuild : DiagGroup<"module-build">;
 def ModuleConflict : DiagGroup<"module-conflict">;
 def NewlineEOF : DiagGroup<"newline-eof">;
+def Nullability : DiagGroup<"nullability">;
+def NullabilityDeclSpec : DiagGroup<"nullability-declspec">;
+def NullableToNonNullConversion : DiagGroup<"nullable-to-nonnull-conversion">;
+def NullabilityCompleteness : DiagGroup<"nullability-completeness">;
 def NullArithmetic : DiagGroup<"null-arithmetic">;
 def NullCharacter : DiagGroup<"null-character">;
 def NullDereference : DiagGroup<"null-dereference">;
@@ -276,6 +280,7 @@ def FunctionDefInObjCContainer : DiagGroup<"function-def-in-objc-container">;
 def BadFunctionCast : DiagGroup<"bad-function-cast">;
 def ObjCPropertyImpl : DiagGroup<"objc-property-implementation">;
 def ObjCPropertyNoAttribute : DiagGroup<"objc-property-no-attribute">;
+def ObjCProtocolQualifiers : DiagGroup<"objc-protocol-qualifiers">;
 def ObjCMissingSuperCalls : DiagGroup<"objc-missing-super-calls">;
 def ObjCDesignatedInit : DiagGroup<"objc-designated-initializers">;
 def ObjCRetainBlockProperty : DiagGroup<"objc-noncopy-retain-block-property">;
@@ -598,6 +603,7 @@ def Most : DiagGroup<"most", [
     DeleteNonVirtualDtor,
     Format,
     Implicit,
+    InfiniteRecursion,
     MismatchedTags,
     MissingBraces,
     Move,

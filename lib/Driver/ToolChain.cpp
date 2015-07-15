@@ -151,6 +151,8 @@ Tool *ToolChain::getTool(Action::ActionClass AC) const {
 
   case Action::InputClass:
   case Action::BindArchClass:
+  case Action::CudaDeviceClass:
+  case Action::CudaHostClass:
   case Action::LipoJobClass:
   case Action::DsymutilJobClass:
   case Action::VerifyDebugInfoJobClass:
@@ -481,3 +483,12 @@ bool ToolChain::AddFastMathRuntimeIfAvailable(const ArgList &Args,
   CmdArgs.push_back(Args.MakeArgString(Path));
   return true;
 }
+
+SanitizerMask ToolChain::getSupportedSanitizers() const {
+  // Return sanitizers which don't require runtime support and are not
+  // platform or architecture-dependent.
+  using namespace SanitizerKind;
+  return (Undefined & ~Vptr & ~Function) | CFI | CFICastStrict |
+         UnsignedIntegerOverflow | LocalBounds;
+}
+

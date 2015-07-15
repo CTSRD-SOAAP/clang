@@ -124,6 +124,12 @@ static void AdoptTemplateParameterList(TemplateParameterList *Params,
   }
 }
 
+namespace clang {
+void *allocateDefaultArgStorageChain(const ASTContext &C) {
+  return new (C) char[sizeof(void*) * 2];
+}
+}
+
 //===----------------------------------------------------------------------===//
 // RedeclarableTemplateDecl Implementation
 //===----------------------------------------------------------------------===//
@@ -658,6 +664,11 @@ TemplateTemplateParmDecl::CreateDeserialized(ASTContext &C, unsigned ID,
   return new (C, ID, sizeof(TemplateParameterList*) * NumExpansions)
       TemplateTemplateParmDecl(nullptr, SourceLocation(), 0, 0, nullptr,
                                nullptr, NumExpansions, nullptr);
+}
+
+SourceLocation TemplateTemplateParmDecl::getDefaultArgumentLoc() const {
+  return hasDefaultArgument() ? getDefaultArgument().getLocation()
+                              : SourceLocation();
 }
 
 void TemplateTemplateParmDecl::setDefaultArgument(

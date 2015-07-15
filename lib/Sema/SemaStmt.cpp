@@ -25,6 +25,7 @@
 #include "clang/AST/StmtObjC.h"
 #include "clang/AST/TypeLoc.h"
 #include "clang/AST/TypeOrdering.h"
+#include "clang/Basic/TargetInfo.h"
 #include "clang/Lex/Preprocessor.h"
 #include "clang/Sema/Initialization.h"
 #include "clang/Sema/Lookup.h"
@@ -495,6 +496,7 @@ Sema::ActOnIfStmt(SourceLocation IfLoc, FullExprArg CondVal, Decl *CondVar,
   if (CondVar) {
     ConditionVar = cast<VarDecl>(CondVar);
     CondResult = CheckConditionVariable(ConditionVar, IfLoc, true);
+    CondResult = ActOnFinishFullExpr(CondResult.get(), IfLoc);
     if (CondResult.isInvalid())
       return StmtError();
   }
@@ -649,12 +651,10 @@ Sema::ActOnStartOfSwitchStmt(SourceLocation SwitchLoc, Expr *Cond,
   if (CondResult.isInvalid()) return StmtError();
   Cond = CondResult.get();
 
-  if (!CondVar) {
-    CondResult = ActOnFinishFullExpr(Cond, SwitchLoc);
-    if (CondResult.isInvalid())
-      return StmtError();
-    Cond = CondResult.get();
-  }
+  CondResult = ActOnFinishFullExpr(Cond, SwitchLoc);
+  if (CondResult.isInvalid())
+    return StmtError();
+  Cond = CondResult.get();
 
   getCurFunction()->setHasBranchIntoScope();
 
@@ -1229,6 +1229,7 @@ Sema::ActOnWhileStmt(SourceLocation WhileLoc, FullExprArg Cond,
   if (CondVar) {
     ConditionVar = cast<VarDecl>(CondVar);
     CondResult = CheckConditionVariable(ConditionVar, WhileLoc, true);
+    CondResult = ActOnFinishFullExpr(CondResult.get(), WhileLoc);
     if (CondResult.isInvalid())
       return StmtError();
   }
@@ -1634,6 +1635,7 @@ Sema::ActOnForStmt(SourceLocation ForLoc, SourceLocation LParenLoc,
   if (secondVar) {
     ConditionVar = cast<VarDecl>(secondVar);
     SecondResult = CheckConditionVariable(ConditionVar, ForLoc, true);
+    SecondResult = ActOnFinishFullExpr(SecondResult.get(), ForLoc);
     if (SecondResult.isInvalid())
       return StmtError();
   }
@@ -3432,7 +3434,7 @@ class CatchHandlerType {
 
 public:
   /// Used when creating a CatchHandlerType from a handler type; will determine
-  /// whether the type is a pointer or reference and will strip off the the top
+  /// whether the type is a pointer or reference and will strip off the top
   /// level pointer and cv-qualifiers.
   CatchHandlerType(QualType Q) : QT(Q), IsPointer(false) {
     if (QT->isPointerType())
@@ -3647,6 +3649,10 @@ StmtResult Sema::ActOnSEHTryBlock(bool IsCXXTry, SourceLocation TryLoc,
     FD->setUsesSEHTry(true);
   else
     Diag(TryLoc, diag::err_seh_try_outside_functions);
+
+  // Reject __try on unsupported targets.
+  if (!Context.getTargetInfo().isSEHTrySupported())
+    Diag(TryLoc, diag::err_seh_try_unsupported);
 
   return SEHTryStmt::Create(Context, IsCXXTry, TryLoc, TryBlock, Handler);
 }

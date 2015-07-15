@@ -99,6 +99,27 @@ def err_enum_template : Error<"enumeration cannot be a template">;
 
 }
 
+let CategoryName = "Nullability Issue" in {
+
+def warn_nullability_duplicate : Warning<
+  "duplicate nullability specifier %0">,
+  InGroup<Nullability>;
+  
+def warn_conflicting_nullability_attr_overriding_ret_types : Warning<
+  "conflicting nullability specifier on return types, %0 "
+  "conflicts with existing specifier %1">,
+  InGroup<Nullability>;
+
+def warn_conflicting_nullability_attr_overriding_param_types : Warning<
+  "conflicting nullability specifier on parameter types, %0 "
+  "conflicts with existing specifier %1">,
+  InGroup<Nullability>;
+
+def err_nullability_conflicting : Error<
+  "nullability specifier %0 conflicts with existing specifier %1">;
+
+}
+
 // Sema && Lex
 def ext_c99_longlong : Extension<
   "'long long' is an extension when C99 mode is not enabled">,
@@ -158,6 +179,8 @@ def err_target_unsupported_fpmath : Error<
     "the '%0' unit is not supported with this instruction set">;
 def err_target_unsupported_unaligned : Error<
   "the %0 sub-architecture does not support unaligned accesses">;
+def err_opt_not_valid_with_opt : Error<
+  "option '%0' cannot be specified with '%1'">;
 
 // Source manager
 def err_cannot_open_file : Error<"cannot open file '%0': %1">, DefaultFatal;

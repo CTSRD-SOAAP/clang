@@ -94,7 +94,7 @@ public:
 
   llvm::Constant *EmitNullMemberPointer(const MemberPointerType *MPT) override;
 
-  llvm::Constant *EmitMemberPointer(const CXXMethodDecl *MD) override;
+  llvm::Constant *EmitMemberFunctionPointer(const CXXMethodDecl *MD) override;
   llvm::Constant *EmitMemberDataPointer(const MemberPointerType *MPT,
                                         CharUnits offset) override;
   llvm::Constant *EmitMemberPointer(const APValue &MP, QualType MPT) override;
@@ -204,7 +204,8 @@ public:
 
   llvm::Value *getVirtualFunctionPointer(CodeGenFunction &CGF, GlobalDecl GD,
                                          llvm::Value *This,
-                                         llvm::Type *Ty) override;
+                                         llvm::Type *Ty,
+                                         SourceLocation Loc) override;
 
   llvm::Value *EmitVirtualDestructorCall(CodeGenFunction &CGF,
                                          const CXXDestructorDecl *Dtor,
@@ -218,7 +219,7 @@ public:
                        bool ReturnAdjustment) override {
     // Allow inlining of thunks by emitting them with available_externally
     // linkage together with vtables when needed.
-    if (ForVTable)
+    if (ForVTable && !Thunk->hasLocalLinkage())
       Thunk->setLinkage(llvm::GlobalValue::AvailableExternallyLinkage);
   }
 
@@ -655,7 +656,8 @@ ItaniumCXXABI::EmitMemberDataPointer(const MemberPointerType *MPT,
   return llvm::ConstantInt::get(CGM.PtrDiffTy, offset.getQuantity());
 }
 
-llvm::Constant *ItaniumCXXABI::EmitMemberPointer(const CXXMethodDecl *MD) {
+llvm::Constant *
+ItaniumCXXABI::EmitMemberFunctionPointer(const CXXMethodDecl *MD) {
   return BuildMemberPointer(MD, CharUnits::Zero());
 }
 
@@ -1439,13 +1441,15 @@ llvm::GlobalVariable *ItaniumCXXABI::getAddrOfVTable(const CXXRecordDecl *RD,
 llvm::Value *ItaniumCXXABI::getVirtualFunctionPointer(CodeGenFunction &CGF,
                                                       GlobalDecl GD,
                                                       llvm::Value *This,
-                                                      llvm::Type *Ty) {
+                                                      llvm::Type *Ty,
+                                                      SourceLocation Loc) {
   GD = GD.getCanonicalDecl();
   Ty = Ty->getPointerTo()->getPointerTo();
   llvm::Value *VTable = CGF.GetVTablePtr(This, Ty);
 
   if (CGF.SanOpts.has(SanitizerKind::CFIVCall))
-    CGF.EmitVTablePtrCheckForCall(cast<CXXMethodDecl>(GD.getDecl()), VTable);
+    CGF.EmitVTablePtrCheckForCall(cast<CXXMethodDecl>(GD.getDecl()), VTable,
+                                  CodeGenFunction::CFITCK_VCall, Loc);
 
   uint64_t VTableIndex = CGM.getItaniumVTableContext().getMethodVTableIndex(GD);
   llvm::Value *VFuncPtr =
@@ -1463,7 +1467,8 @@ llvm::Value *ItaniumCXXABI::EmitVirtualDestructorCall(
       Dtor, getFromDtorType(DtorType));
   llvm::Type *Ty = CGF.CGM.getTypes().GetFunctionType(*FInfo);
   llvm::Value *Callee =
-      getVirtualFunctionPointer(CGF, GlobalDecl(Dtor, DtorType), This, Ty);
+      getVirtualFunctionPointer(CGF, GlobalDecl(Dtor, DtorType), This, Ty,
+                                CE ? CE->getLocStart() : SourceLocation());
 
   CGF.EmitCXXMemberOrOperatorCall(Dtor, Callee, ReturnValueSlot(), This,
                                   /*ImplicitParam=*/nullptr, QualType(), CE);
@@ -2090,7 +2095,7 @@ void ItaniumCXXABI::EmitThreadLocalInitFuncs(
     CGBuilderTy Builder(Entry);
     if (InitIsInitFunc) {
       if (Init)
-        Builder.CreateCall(Init, {});
+        Builder.CreateCall(Init);
     } else {
       // Don't know whether we have an init function. Call it if it exists.
       llvm::Value *Have = Builder.CreateIsNotNull(Init);
@@ -2099,7 +2104,7 @@ void ItaniumCXXABI::EmitThreadLocalInitFuncs(
       Builder.CreateCondBr(Have, InitBB, ExitBB);
 
       Builder.SetInsertPoint(InitBB);
-      Builder.CreateCall(Init, {});
+      Builder.CreateCall(Init);
       Builder.CreateBr(ExitBB);
 
       Builder.SetInsertPoint(ExitBB);
@@ -2128,7 +2133,7 @@ LValue ItaniumCXXABI::EmitThreadLocalVarDeclLValue(CodeGenFunction &CGF,
   llvm::Value *Val = CGF.CGM.GetAddrOfGlobalVar(VD, Ty);
   llvm::Function *Wrapper = getOrCreateThreadLocalWrapper(VD, Val);
 
-  Val = CGF.Builder.CreateCall(Wrapper, {});
+  Val = CGF.Builder.CreateCall(Wrapper);
 
   LValue LV;
   if (VD->getType()->isReferenceType())
@@ -3615,7 +3620,7 @@ static llvm::Constant *getClangCallTerminateFn(CodeGenModule &CGM) {
     catchCall->setCallingConv(CGM.getRuntimeCC());
 
     // Call std::terminate().
-    llvm::CallInst *termCall = builder.CreateCall(CGM.getTerminateFn(), {});
+    llvm::CallInst *termCall = builder.CreateCall(CGM.getTerminateFn());
     termCall->setDoesNotThrow();
     termCall->setDoesNotReturn();
     termCall->setCallingConv(CGM.getRuntimeCC());
