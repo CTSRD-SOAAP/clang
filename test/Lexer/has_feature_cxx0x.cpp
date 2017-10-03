@@ -1,6 +1,6 @@
 // RUN: %clang_cc1 -E -triple x86_64-linux-gnu -std=c++11 %s -o - | FileCheck --check-prefix=CHECK-11 %s
 // RUN: %clang_cc1 -E -triple armv7-apple-darwin -std=c++11 %s -o - | FileCheck --check-prefix=CHECK-NO-TLS %s
-// RUN: %clang_cc1 -E -triple x86_64-linux-gnu %s -o - | FileCheck --check-prefix=CHECK-NO-11 %s
+// RUN: %clang_cc1 -E -triple x86_64-linux-gnu -std=c++98 %s -o - | FileCheck --check-prefix=CHECK-NO-11 %s
 // RUN: %clang_cc1 -E -triple x86_64-linux-gnu -std=c++14 %s -o - | FileCheck --check-prefix=CHECK-14 %s
 // RUN: %clang_cc1 -E -triple x86_64-linux-gnu -std=c++1z %s -o - | FileCheck --check-prefix=CHECK-1Z %s
 
@@ -300,6 +300,17 @@ int no_constexpr();
 // CHECK-14: has_constexpr
 // CHECK-11: has_constexpr
 // CHECK-NO-11: no_constexpr
+
+#if __has_feature(cxx_constexpr_string_builtins)
+int has_constexpr_string_builtins();
+#else
+int no_constexpr_string_builtins();
+#endif
+
+// CHECK-1Z: has_constexpr_string_builtins
+// CHECK-14: has_constexpr_string_builtins
+// CHECK-11: has_constexpr_string_builtins
+// CHECK-NO-11: no_constexpr_string_builtins
 
 #if __has_feature(cxx_generalized_initializers)
 int has_generalized_initializers();

@@ -23,43 +23,44 @@ using namespace clang;
 using namespace llvm::opt;
 
 Compilation::Compilation(const Driver &D, const ToolChain &_DefaultToolChain,
-                         InputArgList *_Args, DerivedArgList *_TranslatedArgs)
-    : TheDriver(D), DefaultToolChain(_DefaultToolChain), Args(_Args),
-      TranslatedArgs(_TranslatedArgs), Redirects(nullptr),
-      ForDiagnostics(false) {}
+                         InputArgList *_Args, DerivedArgList *_TranslatedArgs,
+                         bool ContainsError)
+    : TheDriver(D), DefaultToolChain(_DefaultToolChain), ActiveOffloadMask(0u),
+      Args(_Args), TranslatedArgs(_TranslatedArgs), ForDiagnostics(false),
+      ContainsError(ContainsError) {
+  // The offloading host toolchain is the default tool chain.
+  OrderedOffloadingToolchains.insert(
+      std::make_pair(Action::OFK_Host, &DefaultToolChain));
+}
 
 Compilation::~Compilation() {
   delete TranslatedArgs;
   delete Args;
 
   // Free any derived arg lists.
-  for (llvm::DenseMap<std::pair<const ToolChain*, const char*>,
-                      DerivedArgList*>::iterator it = TCArgs.begin(),
-         ie = TCArgs.end(); it != ie; ++it)
-    if (it->second != TranslatedArgs)
-      delete it->second;
-
-  // Free the actions, if built.
-  for (ActionList::iterator it = Actions.begin(), ie = Actions.end();
-       it != ie; ++it)
-    delete *it;
-
-  // Free redirections of stdout/stderr.
-  if (Redirects) {
-    delete Redirects[1];
-    delete Redirects[2];
-    delete [] Redirects;
-  }
+  for (auto Arg : TCArgs)
+    if (Arg.second != TranslatedArgs)
+      delete Arg.second;
 }
 
-const DerivedArgList &Compilation::getArgsForToolChain(const ToolChain *TC,
-                                                       const char *BoundArch) {
+const DerivedArgList &
+Compilation::getArgsForToolChain(const ToolChain *TC, StringRef BoundArch,
+                                 Action::OffloadKind DeviceOffloadKind) {
   if (!TC)
     TC = &DefaultToolChain;
 
-  DerivedArgList *&Entry = TCArgs[std::make_pair(TC, BoundArch)];
+  DerivedArgList *&Entry = TCArgs[{TC, BoundArch, DeviceOffloadKind}];
   if (!Entry) {
-    Entry = TC->TranslateArgs(*TranslatedArgs, BoundArch);
+    // Translate OpenMP toolchain arguments provided via the -Xopenmp-target flags.
+    DerivedArgList *OpenMPArgs = TC->TranslateOpenMPTargetArgs(*TranslatedArgs,
+        DeviceOffloadKind);
+    if (!OpenMPArgs) {
+      Entry = TC->TranslateArgs(*TranslatedArgs, BoundArch, DeviceOffloadKind);
+    } else {
+      Entry = TC->TranslateArgs(*OpenMPArgs, BoundArch, DeviceOffloadKind);
+      delete OpenMPArgs;
+    }
+
     if (!Entry)
       Entry = TranslatedArgs;
   }
@@ -167,39 +168,17 @@ int Compilation::ExecuteCommand(const Command &C,
   return ExecutionFailed ? 1 : Res;
 }
 
-typedef SmallVectorImpl< std::pair<int, const Command *> > FailingCommandList;
-
-static bool ActionFailed(const Action *A,
-                         const FailingCommandList &FailingCommands) {
-
-  if (FailingCommands.empty())
-    return false;
-
-  for (FailingCommandList::const_iterator CI = FailingCommands.begin(),
-         CE = FailingCommands.end(); CI != CE; ++CI)
-    if (A == &(CI->second->getSource()))
-      return true;
-
-  for (Action::const_iterator AI = A->begin(), AE = A->end(); AI != AE; ++AI)
-    if (ActionFailed(*AI, FailingCommands))
-      return true;
-
-  return false;
-}
-
-static bool InputsOk(const Command &C,
-                     const FailingCommandList &FailingCommands) {
-  return !ActionFailed(&C.getSource(), FailingCommands);
-}
-
-void Compilation::ExecuteJobs(const JobList &Jobs,
-                              FailingCommandList &FailingCommands) const {
+void Compilation::ExecuteJobs(
+    const JobList &Jobs,
+    SmallVectorImpl<std::pair<int, const Command *>> &FailingCommands) const {
   for (const auto &Job : Jobs) {
-    if (!InputsOk(Job, FailingCommands))
-      continue;
     const Command *FailingCommand = nullptr;
-    if (int Res = ExecuteCommand(Job, FailingCommand))
+    if (int Res = ExecuteCommand(Job, FailingCommand)) {
       FailingCommands.push_back(std::make_pair(Res, FailingCommand));
+      // Bail as soon as one command fails, so we don't output duplicate error
+      // messages if we die on e.g. the same file.
+      return;
+    }
   }
 }
 
@@ -207,7 +186,8 @@ void Compilation::initCompilationForDiagnostics() {
   ForDiagnostics = true;
 
   // Free actions and jobs.
-  DeleteContainerPointers(Actions);
+  Actions.clear();
+  AllActions.clear();
   Jobs.clear();
 
   // Clear temporary/results file lists.
@@ -226,12 +206,13 @@ void Compilation::initCompilationForDiagnostics() {
   TranslatedArgs->ClaimAllArgs();
 
   // Redirect stdout/stderr to /dev/null.
-  Redirects = new const StringRef*[3]();
-  Redirects[0] = nullptr;
-  Redirects[1] = new StringRef();
-  Redirects[2] = new StringRef();
+  Redirects = {None, {""}, {""}};
 }
 
 StringRef Compilation::getSysRoot() const {
   return getDriver().SysRoot;
+}
+
+void Compilation::Redirect(ArrayRef<Optional<StringRef>> Redirects) {
+  this->Redirects = Redirects;
 }

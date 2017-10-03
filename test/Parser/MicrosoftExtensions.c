@@ -5,7 +5,7 @@ typedef int (__cdecl *tptr)(void);
 void (*__fastcall fastpfunc)(void);
 extern __declspec(dllimport) void __stdcall VarR4FromDec(void);
 __declspec(deprecated) __declspec(deprecated) char * __cdecl ltoa( long _Val, char * _DstBuf, int _Radix);
-__declspec(safebuffers) __declspec(noalias) __declspec(restrict) void * __cdecl xxx(void *_Memory); /* expected-warning{{__declspec attribute 'safebuffers' is not supported}} expected-warning{{__declspec attribute 'noalias' is not supported}} */
+__declspec(safebuffers) __declspec(noalias) __declspec(restrict) void * __cdecl xxx(void *_Memory); /* expected-warning{{__declspec attribute 'safebuffers' is not supported}} */
 typedef __w64 unsigned long ULONG_PTR, *PULONG_PTR;
 
 void * __ptr64 PtrToPtr64(const void *p) {
@@ -35,6 +35,9 @@ void test_ms_alignof_alias(void) {
 /* Charify extension. */
 #define FOO(x) #@x
 char x = FOO(a);
+#define HASHAT #@
+#define MISSING_ARG(x) #@
+/* expected-error@-1 {{'#@' is not followed by a macro parameter}} */
 
 typedef enum E { e1 };
 
@@ -103,3 +106,12 @@ __declspec(align(16)) struct align_before_key3 {} *align_before_key3_var;
 _Static_assert(__alignof(struct align_before_key1) == 16, "");
 _Static_assert(__alignof(struct align_before_key2) == 16, "");
 _Static_assert(__alignof(struct align_before_key3) == 16, "");
+
+void PR28782(int i) {
+foo:
+  int n;
+  switch (i) {
+  case 0:
+    int m;
+  }
+}

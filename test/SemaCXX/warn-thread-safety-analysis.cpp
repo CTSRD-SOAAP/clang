@@ -1,4 +1,5 @@
-// RUN: %clang_cc1 -fsyntax-only -verify -std=c++11 -Wthread-safety -Wthread-safety-beta -Wno-thread-safety-negative -fcxx-exceptions %s
+// RUN: %clang_cc1 -fsyntax-only -verify -std=c++11 -Wthread-safety -Wthread-safety-beta -Wno-thread-safety-negative -fcxx-exceptions -DUSE_ASSERT_CAPABILITY=0 %s
+// RUN: %clang_cc1 -fsyntax-only -verify -std=c++11 -Wthread-safety -Wthread-safety-beta -Wno-thread-safety-negative -fcxx-exceptions -DUSE_ASSERT_CAPABILITY=1 %s
 
 // FIXME: should also run  %clang_cc1 -fsyntax-only -verify -Wthread-safety -std=c++11 -Wc++98-compat %s
 // FIXME: should also run  %clang_cc1 -fsyntax-only -verify -Wthread-safety %s
@@ -13,8 +14,15 @@
 #define ACQUIRED_BEFORE(...) __attribute__((acquired_before(__VA_ARGS__)))
 #define EXCLUSIVE_LOCK_FUNCTION(...)    __attribute__((exclusive_lock_function(__VA_ARGS__)))
 #define SHARED_LOCK_FUNCTION(...)       __attribute__((shared_lock_function(__VA_ARGS__)))
+
+#if USE_ASSERT_CAPABILITY
+#define ASSERT_EXCLUSIVE_LOCK(...)      __attribute__((assert_capability(__VA_ARGS__)))
+#define ASSERT_SHARED_LOCK(...)         __attribute__((assert_shared_capability(__VA_ARGS__)))
+#else
 #define ASSERT_EXCLUSIVE_LOCK(...)      __attribute__((assert_exclusive_lock(__VA_ARGS__)))
 #define ASSERT_SHARED_LOCK(...)         __attribute__((assert_shared_lock(__VA_ARGS__)))
+#endif
+
 #define EXCLUSIVE_TRYLOCK_FUNCTION(...) __attribute__((exclusive_trylock_function(__VA_ARGS__)))
 #define SHARED_TRYLOCK_FUNCTION(...)    __attribute__((shared_trylock_function(__VA_ARGS__)))
 #define UNLOCK_FUNCTION(...)            __attribute__((unlock_function(__VA_ARGS__)))
@@ -3675,8 +3683,13 @@ class Foo {
                        SHARED_TRYLOCK_FUNCTION(true, mu2_);
   void assertBoth() ASSERT_EXCLUSIVE_LOCK(mu1_)
                     ASSERT_EXCLUSIVE_LOCK(mu2_);
+
+  void alsoAssertBoth() ASSERT_EXCLUSIVE_LOCK(mu1_, mu2_);
+
   void assertShared() ASSERT_SHARED_LOCK(mu1_)
                       ASSERT_SHARED_LOCK(mu2_);
+
+  void alsoAssertShared() ASSERT_SHARED_LOCK(mu1_, mu2_);
 
   void test();
   void testAssert();
@@ -3741,17 +3754,33 @@ void Foo::test() {
 
 // Force duplication of attributes
 void Foo::assertBoth() { }
+void Foo::alsoAssertBoth() { }
 void Foo::assertShared() { }
+void Foo::alsoAssertShared() { }
 
 void Foo::testAssert() {
-  assertBoth();
-  a = 0;
-  b = 0;
+  {
+    assertBoth();
+    a = 0;
+    b = 0;
+  }
+  {
+    alsoAssertBoth();
+    a = 0;
+    b = 0;
+  }
 }
 
 void Foo::testAssertShared() {
-  assertShared();
-  int zz = a + b;
+  {
+    assertShared();
+    int zz = a + b;
+  }
+
+  {
+    alsoAssertShared();
+    int zz = a + b;
+  }
 }
 
 
@@ -5091,3 +5120,116 @@ class Foo {
 
 }  // end namespace ScopedAdoptTest
 
+
+namespace TestReferenceNoThreadSafetyAnalysis {
+
+#define TS_UNCHECKED_READ(x) ts_unchecked_read(x)
+
+// Takes a reference to a guarded data member, and returns an unguarded
+// reference.
+template <class T>
+inline const T& ts_unchecked_read(const T& v) NO_THREAD_SAFETY_ANALYSIS {
+  return v;
+}
+
+template <class T>
+inline T& ts_unchecked_read(T& v) NO_THREAD_SAFETY_ANALYSIS {
+  return v;
+}
+
+
+class Foo {
+public:
+  Foo(): a(0) { }
+
+  int a;
+};
+
+
+class Bar {
+public:
+  Bar() : a(0) { }
+
+  Mutex mu;
+  int a   GUARDED_BY(mu);
+  Foo foo GUARDED_BY(mu);
+};
+
+
+void test() {
+  Bar bar;
+  const Bar cbar;
+
+  int a = TS_UNCHECKED_READ(bar.a);       // nowarn
+  TS_UNCHECKED_READ(bar.a) = 1;           // nowarn
+
+  int b = TS_UNCHECKED_READ(bar.foo).a;   // nowarn
+  TS_UNCHECKED_READ(bar.foo).a = 1;       // nowarn
+
+  int c = TS_UNCHECKED_READ(cbar.a);      // nowarn
+}
+
+#undef TS_UNCHECKED_READ
+
+}  // end namespace TestReferenceNoThreadSafetyAnalysis
+
+
+namespace GlobalAcquiredBeforeAfterTest {
+
+Mutex mu1;
+Mutex mu2 ACQUIRED_AFTER(mu1);
+
+void test3() {
+  mu2.Lock();
+  mu1.Lock();  // expected-warning {{mutex 'mu1' must be acquired before 'mu2'}}
+  mu1.Unlock();
+  mu2.Unlock();
+}
+
+}  // end namespace  GlobalAcquiredBeforeAfterTest
+
+
+namespace LifetimeExtensionText {
+
+struct Holder {
+  virtual ~Holder() throw() {}
+  int i = 0;
+};
+
+void test() {
+  // Should not crash.
+  const auto &value = Holder().i;
+}
+
+} // end namespace LifetimeExtensionTest
+
+
+namespace LockableUnions {
+
+union LOCKABLE MutexUnion {
+  int a;
+  char* b;
+
+  void Lock()   EXCLUSIVE_LOCK_FUNCTION();
+  void Unlock() UNLOCK_FUNCTION();
+};
+
+MutexUnion muun2;
+MutexUnion muun1 ACQUIRED_BEFORE(muun2);
+
+void test() {
+  muun2.Lock();
+  muun1.Lock();  // expected-warning {{mutex 'muun1' must be acquired before 'muun2'}}
+  muun1.Unlock();
+  muun2.Unlock();
+}
+
+}  // end namespace LockableUnions
+
+// This used to crash.
+class acquired_before_empty_str {
+  void WaitUntilSpaceAvailable() {
+    lock_.ReaderLock(); // expected-note {{acquired here}}
+  } // expected-warning {{mutex 'lock_' is still held at the end of function}}
+  Mutex lock_ ACQUIRED_BEFORE("");
+};

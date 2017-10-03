@@ -1,6 +1,25 @@
-// RUN: %clang_cc1 -triple x86_64-unk-unk -fstandalone-debug -o - -emit-llvm -g %s | FileCheck %s
-// On Darwin, this should be the default:
-// RUN: %clang_cc1 -triple x86_64-apple-darwin -o - -emit-llvm -g %s | FileCheck %s
+// RUN: %clang_cc1 -triple x86_64-apple-darwin -debug-info-kind=standalone -o - -emit-llvm %s | FileCheck %s
+
+// We had a bug in -fstandalone-debug where UnicodeString would not be completed
+// when it was required to be complete. This orginally manifested as an
+// assertion in CodeView emission on Windows with some dllexport stuff, but it's
+// more general than that.
+
+struct UnicodeString;
+UnicodeString *force_fwd_decl;
+struct UnicodeString {
+private:
+  virtual ~UnicodeString();
+};
+struct UseCompleteType {
+  UseCompleteType();
+  ~UseCompleteType();
+  UnicodeString currencySpcAfterSym[1];
+};
+UseCompleteType require_complete;
+// CHECK: !DICompositeType(tag: DW_TAG_structure_type, name: "UnicodeString"
+// CHECK-NOT:              DIFlagFwdDecl
+// CHECK-SAME:             ){{$}}
 
 namespace rdar14101097_1 { // see also PR16214
 // Check that we emit debug info for the definition of a struct if the
@@ -33,4 +52,3 @@ void bar() {
 struct foo {
 };
 }
-

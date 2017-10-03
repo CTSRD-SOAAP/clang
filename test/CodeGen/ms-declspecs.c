@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -triple i386-pc-win32 %s -emit-llvm -fms-compatibility -o - | FileCheck %s
+// RUN: %clang_cc1 -triple i386-pc-win32 %s -emit-llvm -fms-compatibility -O2 -disable-llvm-passes -o - | FileCheck %s
 
 __declspec(selectany) int x1 = 1;
 const __declspec(selectany) int x2 = 2;
@@ -33,7 +33,12 @@ __declspec(noinline) void t2() {}
 __declspec(noreturn) void f20_t(void);
 void f20(void) { f20_t(); }
 
+__declspec(noalias) void noalias_callee(int *x);
+// CHECK: call void @noalias_callee({{.*}}) [[NA:#[0-9]+]]
+void noalias_caller(int *x) { noalias_callee(x); }
+
 // CHECK: attributes [[NAKED]] = { naked noinline nounwind{{.*}} }
 // CHECK: attributes [[NUW]] = { nounwind{{.*}} }
 // CHECK: attributes [[NI]] = { noinline nounwind{{.*}} }
 // CHECK: attributes [[NR]] = { noreturn }
+// CHECK: attributes [[NA]] = { argmemonly nounwind{{.*}} }

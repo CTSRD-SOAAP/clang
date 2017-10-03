@@ -3,23 +3,26 @@
 //
 // CHECK-NO-PIC: "-mrelocation-model" "static"
 // CHECK-NO-PIC-NOT: "-pic-level"
-// CHECK-NO-PIC-NOT: "-pie-level"
+// CHECK-NO-PIC-NOT: "-pic-is-pie"
 //
 // CHECK-PIC1: "-mrelocation-model" "pic"
 // CHECK-PIC1: "-pic-level" "1"
+// CHECK-PIC1-NOT: "-pic-is-pie"
 //
 // CHECK-PIC2: "-mrelocation-model" "pic"
 // CHECK-PIC2: "-pic-level" "2"
+// CHECK-PIC2-NOT: "-pic-is-pie"
 //
+// CHECK-STATIC: "-static"
 // CHECK-NO-STATIC-NOT: "-static"
 //
 // CHECK-PIE1: "-mrelocation-model" "pic"
 // CHECK-PIE1: "-pic-level" "1"
-// CHECK-PIE1: "-pie-level" "1"
+// CHECK-PIE1: "-pic-is-pie"
 //
 // CHECK-PIE2: "-mrelocation-model" "pic"
 // CHECK-PIE2: "-pic-level" "2"
-// CHECK-PIE2: "-pie-level" "2"
+// CHECK-PIE2: "-pic-is-pie"
 //
 // CHECK-PIE-LD: "{{.*}}ld{{(.exe)?}}"
 // CHECK-PIE-LD: "-pie"
@@ -30,11 +33,11 @@
 //
 // CHECK-DYNAMIC-NO-PIC-32: "-mrelocation-model" "dynamic-no-pic"
 // CHECK-DYNAMIC-NO-PIC-32-NOT: "-pic-level"
-// CHECK-DYNAMIC-NO-PIC-32-NOT: "-pie-level"
+// CHECK-DYNAMIC-NO-PIC-32-NOT: "-pic-is-pie"
 //
 // CHECK-DYNAMIC-NO-PIC-64: "-mrelocation-model" "dynamic-no-pic"
 // CHECK-DYNAMIC-NO-PIC-64: "-pic-level" "2"
-// CHECK-DYNAMIC-NO-PIC-64-NOT: "-pie-level"
+// CHECK-DYNAMIC-NO-PIC-64-NOT: "-pic-is-pie"
 //
 // CHECK-NON-DARWIN-DYNAMIC-NO-PIC: error: unsupported option '-mdynamic-no-pic' for target 'i386-unknown-unknown'
 //
@@ -135,18 +138,24 @@
 // Disregard any of the PIC-specific flags if we have a trump-card flag.
 // RUN: %clang -c %s -target i386-unknown-unknown -mkernel -fPIC -### 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-NO-PIC
+
+// The -static argument *doesn't* override PIC: -static only affects
+// linking, and -fPIC only affects code generation.
 // RUN: %clang -c %s -target i386-unknown-unknown -static -fPIC -### 2>&1 \
-// RUN:   | FileCheck %s --check-prefix=CHECK-NO-PIC
+// RUN:   | FileCheck %s --check-prefix=CHECK-PIC2
+// RUN: %clang %s -target i386-linux-gnu -static -fPIC -### \
+// RUN: --gcc-toolchain="" \
+// RUN: --sysroot=%S/Inputs/basic_linux_tree 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-STATIC
 //
 // On Linux, disregard -pie if we have -shared.
 // RUN: %clang %s -target i386-unknown-linux -shared -pie -### 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-NO-PIE
 //
 // Darwin is a beautiful and unique snowflake when it comes to these flags.
-// When targeting a 32-bit darwin system, the -fno-* flag variants work and
-// disable PIC, but any other flag enables PIC (*not* PIE) even if the flag
-// specifies PIE. On 64-bit targets, there is simply nothing you can do, there
-// is no PIE, there is only PIC when it comes to compilation.
+// When targeting a 32-bit darwin system, only level 2 is supported. On 64-bit
+// targets, there is simply nothing you can do, there is no PIE, there is only
+// PIC when it comes to compilation.
 // RUN: %clang -c %s -target i386-apple-darwin -### 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-PIC2
 // RUN: %clang -c %s -target i386-apple-darwin -fpic -### 2>&1 \
@@ -154,9 +163,9 @@
 // RUN: %clang -c %s -target i386-apple-darwin -fPIC -### 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-PIC2
 // RUN: %clang -c %s -target i386-apple-darwin -fpie -### 2>&1 \
-// RUN:   | FileCheck %s --check-prefix=CHECK-PIC2
+// RUN:   | FileCheck %s --check-prefix=CHECK-PIE2
 // RUN: %clang -c %s -target i386-apple-darwin -fPIE -### 2>&1 \
-// RUN:   | FileCheck %s --check-prefix=CHECK-PIC2
+// RUN:   | FileCheck %s --check-prefix=CHECK-PIE2
 // RUN: %clang -c %s -target i386-apple-darwin -fno-PIC -### 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-NO-PIC
 // RUN: %clang -c %s -target i386-apple-darwin -fno-PIE -### 2>&1 \
@@ -164,7 +173,7 @@
 // RUN: %clang -c %s -target i386-apple-darwin -fno-PIC -fpic -### 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-PIC2
 // RUN: %clang -c %s -target i386-apple-darwin -fno-PIC -fPIE -### 2>&1 \
-// RUN:   | FileCheck %s --check-prefix=CHECK-PIC2
+// RUN:   | FileCheck %s --check-prefix=CHECK-PIE2
 // RUN: %clang -c %s -target x86_64-apple-darwin -fno-PIC -### 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-PIC2
 // RUN: %clang -c %s -target x86_64-apple-darwin -fno-PIE -### 2>&1 \
@@ -204,15 +213,23 @@
 // RUN:   | FileCheck %s --check-prefix=CHECK-PIC2
 // RUN: %clang -x assembler -c %s -target arm64-apple-ios -mkernel -miphoneos-version-min=7.0.0 -no-integrated-as -### 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-NO-STATIC
+// RUN: %clang -c %s -target armv7k-apple-watchos -fapple-kext -mwatchos-version-min=1.0.0 -### 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-PIC2
 // RUN: %clang -c %s -target armv7-apple-ios -fapple-kext -miphoneos-version-min=5.0.0 -### 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-NO-PIC
 // RUN: %clang -c %s -target armv7-apple-ios -fapple-kext -miphoneos-version-min=6.0.0 -static -### 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-NO-PIC
+// RUN: %clang -c %s -target armv7-apple-unknown-macho -static -### 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-NO-PIC
 //
 // On OpenBSD, PIE is enabled by default, but can be disabled.
 // RUN: %clang -c %s -target amd64-pc-openbsd -### 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-PIE1
 // RUN: %clang -c %s -target i386-pc-openbsd -### 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-PIE1
+// RUN: %clang -c %s -target aarch64-unknown-openbsd -### 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-PIE1
+// RUN: %clang -c %s -target arm-unknown-openbsd -### 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-PIE1
 // RUN: %clang -c %s -target mips64-unknown-openbsd -### 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-PIE1
@@ -229,6 +246,9 @@
 //
 // On OpenBSD, -nopie needs to be passed through to the linker.
 // RUN: %clang %s -target i386-pc-openbsd -nopie -### 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-NOPIE-LD
+// Try with the alias
+// RUN: %clang %s -target i386-pc-openbsd -no-pie -### 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-NOPIE-LD
 //
 // On Android PIC is enabled by default

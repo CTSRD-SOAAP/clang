@@ -35,8 +35,8 @@ namespace VariableLengthArrays {
   template<typename Z> using T = int[n]; // expected-error {{variable length array declaration not allowed at file scope}}
 
   const int m = 42;
-  template<typename Z> using U = int[m]; // expected-note {{previous definition}}
-  template<typename Z> using U = int[42]; // ok
+  template<typename Z> using U = int[m];
+  template<typename Z> using U = int[42]; // expected-note {{previous definition}} 
   template<typename Z> using U = int; // expected-error {{type alias template redefinition with different types ('int' vs 'int [42]')}}
 }
 
@@ -167,4 +167,15 @@ namespace SFINAE {
 
   fail1<int> f1; // expected-note {{here}}
   fail2<E> f2; // expected-note {{here}}
+}
+
+namespace PR24212 {
+struct X {};
+template <int I>
+struct S {
+  template <int J>
+  using T = X[J];
+  using U = T<I>;
+};
+static_assert(__is_same(S<3>::U, X[2]), ""); // expected-error {{static_assert failed}}
 }

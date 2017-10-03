@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -fprofile-instr-generate -fcoverage-mapping -dump-coverage-mapping -emit-llvm-only -main-file-name return.c %s | FileCheck %s
+// RUN: %clang_cc1 -fprofile-instrument=clang -fcoverage-mapping -dump-coverage-mapping -emit-llvm-only -main-file-name return.c %s | FileCheck %s
 
                                 // CHECK: func
 void func() {                   // CHECK: File 0, [[@LINE]]:13 -> [[@LINE+3]]:2 = #0
@@ -13,7 +13,7 @@ void func2() {                  // CHECK-NEXT: File 0, [[@LINE]]:14 -> {{[0-9]+}
   for(int i = 0; i < 10; ++i) { // CHECK-NEXT: File 0, [[@LINE]]:31 -> {{[0-9]+}}:4 = #1
                                 // CHECK-NEXT: File 0, [[@LINE+1]]:8 -> [[@LINE+1]]:13 = #1
     if(i > 2) {                 // CHECK-NEXT: File 0, [[@LINE]]:15 -> [[@LINE+2]]:6 = #2
-      return;
+      return;                   // CHECK-NEXT: File 0, [[@LINE+1]]:6 -> [[@LINE+3]]:5 = (#1 - #2)
     }                           // CHECK-NEXT: File 0, [[@LINE+2]]:5 -> {{[0-9]+}}:4 = (#1 - #2)
                                 // CHECK-NEXT: File 0, [[@LINE+1]]:8 -> [[@LINE+1]]:14 = (#1 - #2)
     if(i == 3) {                // CHECK-NEXT: File 0, [[@LINE]]:16 -> [[@LINE+2]]:6 = #3

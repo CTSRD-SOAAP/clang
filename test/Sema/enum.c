@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 %s -fsyntax-only -verify -pedantic
+// RUN: %clang_cc1 -triple %itanium_abi_triple %s -fsyntax-only -verify -pedantic
 enum e {A, 
         B = 42LL << 32,        // expected-warning {{ISO C restricts enumerator values to range of 'int'}}
       C = -4, D = 12456 };
@@ -119,3 +119,18 @@ void crash(enum E* e) // expected-warning {{declaration of 'enum E' will not be 
 
 typedef enum { NegativeShort = (short)-1 } NegativeShortEnum;
 int NegativeShortTest[NegativeShort == -1 ? 1 : -1];
+
+// PR24610
+enum Color { Red, Green, Blue }; // expected-note{{previous use is here}}
+typedef struct Color NewColor; // expected-error {{use of 'Color' with tag type that does not match previous declaration}}
+
+// PR28903
+struct PR28903 {
+  enum {
+    PR28903_A = (enum { // expected-error-re {{'enum PR28903::(anonymous at {{.*}})' cannot be defined in an enumeration}}
+      PR28903_B,
+      PR28903_C = PR28903_B
+    })0
+  };
+  int makeStructNonEmpty;
+};

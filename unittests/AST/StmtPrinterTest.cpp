@@ -45,7 +45,7 @@ public:
   PrintMatch() : NumFoundStmts(0) {}
 
   void run(const MatchFinder::MatchResult &Result) override {
-    const Stmt *S = Result.Nodes.getStmtAs<Stmt>("id");
+    const Stmt *S = Result.Nodes.getNodeAs<Stmt>("id");
     if (!S)
       return;
     NumFoundStmts++;
@@ -196,7 +196,7 @@ TEST(StmtPrinter, TestCXXConversionDeclImplicit) {
     "void foo(A a, A b) {"
     "  bar(a & b);"
     "}",
-    memberCallExpr(anything()).bind("id"),
+    cxxMemberCallExpr(anything()).bind("id"),
     "a & b"));
 }
 
@@ -210,7 +210,7 @@ TEST(StmtPrinter, TestCXXConversionDeclExplicit) {
     "void foo(A a, A b) {"
     "  auto x = (a & b).operator void *();"
     "}",
-    memberCallExpr(anything()).bind("id"),
+    cxxMemberCallExpr(anything()).bind("id"),
     "(a & b)"));
     // WRONG; Should be: (a & b).operator void *()
 }

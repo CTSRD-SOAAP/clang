@@ -12,10 +12,10 @@ void testInlineRedeclEarly() {
 
 @import templates_right;
 
-// CHECK-DAG: @list_left = global %class.List { %"struct.List<int>::node"* null, i32 8 }, align 8
-// CHECK-DAG: @list_right = global %class.List { %"struct.List<int>::node"* null, i32 12 }, align 8
-// CHECK-DAG: @_ZZ15testMixedStructvE1l = {{.*}} constant %class.List { %{{.*}}* null, i32 1 }, align 8
-// CHECK-DAG: @_ZZ15testMixedStructvE1r = {{.*}} constant %class.List { %{{.*}}* null, i32 2 }, align 8
+// CHECK-DAG: @list_left = global %[[LIST:.*]] { %[[LISTNODE:.*]]* null, i32 8 }, align 8
+// CHECK-DAG: @list_right = global %[[LIST]] { %[[LISTNODE]]* null, i32 12 }, align 8
+// CHECK-DAG: @_ZZ15testMixedStructvE1l = {{.*}} constant %[[LIST]] { %{{.*}}* null, i32 1 }, align 8
+// CHECK-DAG: @_ZZ15testMixedStructvE1r = {{.*}} constant %[[LIST]] { %{{.*}}* null, i32 2 }, align 8
 // CHECK-DAG: @_ZN29WithUndefinedStaticDataMemberIA_iE9undefinedE = external global
 
 void testTemplateClasses() {
@@ -27,6 +27,8 @@ void testTemplateClasses() {
 
   N::Set<char> set_char;
   set_char.insert('A');
+
+  static_assert(sizeof(List<long>) == sizeof(List<short>), "");
 
   List<double> list_double;
   list_double.push_back(0.0);
@@ -114,4 +116,9 @@ void testStaticDataMember() {
   (void) getStaticDataMemberRight();
 }
 
-
+void testWithAttributes() {
+  auto a = make_with_attributes_left();
+  auto b = make_with_attributes_right();
+  static_assert(alignof(decltype(a)) == 2, "");
+  static_assert(alignof(decltype(b)) == 2, "");
+}

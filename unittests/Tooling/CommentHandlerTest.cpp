@@ -70,8 +70,7 @@ private:
     CommentHandlerAction(CommentHandlerVisitor *Visitor)
         : TestAction(Visitor) { }
 
-    bool BeginSourceFileAction(CompilerInstance &CI,
-                               StringRef FileName) override {
+    bool BeginSourceFileAction(CompilerInstance &CI) override {
       CommentHandlerVisitor *V =
           static_cast<CommentHandlerVisitor*>(this->Visitor);
       V->PP = &CI.getPreprocessor();
@@ -96,6 +95,10 @@ public:
   CommentVerifier(const CommentList &Comments, Preprocessor *PP)
       : Current(Comments.begin()), End(Comments.end()), PP(PP)
     { }
+
+  CommentVerifier(CommentVerifier &&C) : Current(C.Current), End(C.End), PP(C.PP) {
+    C.Current = C.End;
+  }
 
   ~CommentVerifier() {
     if (Current != End) {

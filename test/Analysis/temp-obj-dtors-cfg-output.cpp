@@ -1,6 +1,8 @@
 // RUN: rm -f %t
-// RUN: %clang_cc1 -analyze -analyzer-checker=debug.DumpCFG -analyzer-config cfg-temporary-dtors=true %s > %t 2>&1
-// RUN: FileCheck --input-file=%t %s
+// RUN: %clang_analyze_cc1 -analyzer-checker=debug.DumpCFG -analyzer-config cfg-temporary-dtors=true -std=c++98 %s > %t 2>&1
+// RUN: FileCheck --input-file=%t -check-prefix=CXX98 -check-prefix=CHECK %s
+// RUN: %clang_analyze_cc1 -analyzer-checker=debug.DumpCFG -analyzer-config cfg-temporary-dtors=true -std=c++11 %s > %t 2>&1
+// RUN: FileCheck --input-file=%t -check-prefix=CXX11 -check-prefix=CHECK %s
 
 class A {
 public:
@@ -671,15 +673,23 @@ int testConsistencyNestedNormalReturn(bool value) {
 // CHECK:     Succs (1): B0
 // CHECK:   [B3]
 // CHECK:     1: D() (CXXConstructExpr, struct D)
-// CHECK:     2: [B3.1] (ImplicitCastExpr, NoOp, const struct D)
-// CHECK:     3: [B3.2]
-// CHECK:     4: [B3.3] (CXXConstructExpr, struct D)
-// CHECK:     5: D d = D();
-// CHECK:     6: d
-// CHECK:     7: [B3.6].operator bool
-// CHECK:     8: [B3.6]
-// CHECK:     9: [B3.8] (ImplicitCastExpr, UserDefinedConversion, _Bool)
-// CHECK:     T: if [B3.9]
+// CXX98:     2: [B3.1] (ImplicitCastExpr, NoOp, const struct D)
+// CXX98:     3: [B3.2]
+// CXX98:     4: [B3.3] (CXXConstructExpr, struct D)
+// CXX98:     5: D d = D();
+// CXX98:     6: d
+// CXX98:     7: [B3.6].operator bool
+// CXX98:     8: [B3.6]
+// CXX98:     9: [B3.8] (ImplicitCastExpr, UserDefinedConversion, _Bool)
+// CXX98:     T: if [B3.9]
+// CXX11:     2: [B3.1]
+// CXX11:     3: [B3.2] (CXXConstructExpr, struct D)
+// CXX11:     4: D d = D();
+// CXX11:     5: d
+// CXX11:     6: [B3.5].operator bool
+// CXX11:     7: [B3.5]
+// CXX11:     8: [B3.7] (ImplicitCastExpr, UserDefinedConversion, _Bool)
+// CXX11:     T: if [B3.8]
 // CHECK:     Preds (1): B4
 // CHECK:     Succs (2): B2 B1
 // CHECK:   [B0 (EXIT)]
@@ -1067,7 +1077,7 @@ int testConsistencyNestedNormalReturn(bool value) {
 // CHECK:    14: a([B1.13]) (Member initializer)
 // CHECK:    15: ~B() (Temporary object destructor)
 // CHECK:    16: ~A() (Temporary object destructor)
-// CHECK:    17: /*implicit*/int()
+// CHECK:    17: /*implicit*/(int)0
 // CHECK:    18: b([B1.17]) (Member initializer)
 // CHECK:     Preds (1): B2
 // CHECK:     Succs (1): B0
@@ -1083,9 +1093,9 @@ int testConsistencyNestedNormalReturn(bool value) {
 // CHECK:     1: int a;
 // CHECK:     2: NoReturn() (CXXConstructExpr, class NoReturn)
 // CHECK:     3: [B2.2] (BindTemporary)
-// CHECK:     4: [B2.3].f
-// CHECK:     5: [B2.4]()
-// CHECK:     6: ~NoReturn() (Temporary object destructor)
+// CHECK:     [[MEMBER:[45]]]: [B2.{{[34]}}].f
+// CHECK:     {{[56]}}: [B2.[[MEMBER]]]()
+// CHECK:     {{[67]}}: ~NoReturn() (Temporary object destructor)
 // CHECK:     Preds (1): B3
 // CHECK:     Succs (1): B0
 // CHECK:   [B0 (EXIT)]

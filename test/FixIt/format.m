@@ -1,5 +1,5 @@
-// RUN: %clang_cc1 -fsyntax-only -fblocks -verify %s
-// RUN: %clang_cc1 -fdiagnostics-parseable-fixits -fblocks %s 2>&1 | FileCheck %s
+// RUN: %clang_cc1 -triple %itanium_abi_triple -fsyntax-only -fblocks -verify %s
+// RUN: %clang_cc1 -triple %itanium_abi_triple -fdiagnostics-parseable-fixits -fblocks %s 2>&1 | FileCheck %s
 
 @class NSString;
 extern void NSLog(NSString *, ...);
@@ -227,6 +227,19 @@ void testSignedness(long i, unsigned long u) {
   printf("%+d", u); // expected-warning{{format specifies type 'int' but the argument has type 'unsigned long'}}
 
   // CHECK: fix-it:"{{.*}}":{[[@LINE-2]]:11-[[@LINE-2]]:14}:"%+ld"
+}
+
+void testSizeTypes() {
+  printf("%zu", 0.f); // expected-warning-re{{format specifies type 'size_t' (aka '{{.+}}') but the argument has type 'float'}}
+  // CHECK: fix-it:"{{.*}}":{[[@LINE-1]]:11-[[@LINE-1]]:14}:"%f"
+
+  printf("%zd", 0.f); // expected-warning-re{{format specifies type 'ssize_t' (aka '{{.+}}') but the argument has type 'float'}}
+  // CHECK: fix-it:"{{.*}}":{[[@LINE-1]]:11-[[@LINE-1]]:14}:"%f"
+  
+  short x;
+  printf("%zn", &x); // expected-warning-re{{format specifies type 'ssize_t *' (aka '{{.+}}') but the argument has type 'short *'}}
+  // PrintfSpecifier::fixType doesn't handle %n, so a fix-it is not emitted, 
+  // see the comment in PrintfSpecifier::fixType in PrintfFormatString.cpp.
 }
 
 void testEnum() {

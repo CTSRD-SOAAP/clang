@@ -26,7 +26,7 @@ int t6 __attribute__((visibility("protected")));
 // CHECK: @t12 = global i32 0, section "SECT"
 int t12 __attribute__((section("SECT")));
 
-// CHECK: @t9 = weak alias bitcast (void ()* @__t8 to void (...)*)
+// CHECK: @t9 = weak alias void (...), bitcast (void ()* @__t8 to void (...)*)
 void __t8() {}
 void t9() __attribute__((weak, alias("__t8")));
 
@@ -55,6 +55,13 @@ void t4() {}
 // CHECK: define void @t7() [[NR]] {
 void t7() __attribute__((noreturn, nothrow));
 void t7() { while (1) {} }
+
+// CHECK: define void @t72() [[COLDDEF:#[0-9]+]] {
+void t71(void) __attribute__((cold));
+void t72() __attribute__((cold));
+void t72() { t71(); }
+// CHECK: call void @t71() [[COLDSITE:#[0-9]+]]
+// CHECK: declare void @t71() [[COLDDECL:#[0-9]+]]
 
 // CHECK: define void @t10() [[NUW]] section "SECT" {
 void t10(void) __attribute__((section("SECT")));
@@ -90,5 +97,8 @@ void __attribute__((section(".bar"))) t22(void) {}
 
 // CHECK: define void @t22() [[NUW]] section ".bar"
 
-// CHECK: attributes [[NUW]] = { nounwind{{.*}} }
-// CHECK: attributes [[NR]] = { noreturn nounwind{{.*}} }
+// CHECK: attributes [[NUW]] = { noinline nounwind{{.*}} }
+// CHECK: attributes [[NR]] = { noinline noreturn nounwind{{.*}} }
+// CHECK: attributes [[COLDDEF]] = { cold {{.*}}}
+// CHECK: attributes [[COLDDECL]] = { cold {{.*}}}
+// CHECK: attributes [[COLDSITE]] = { cold {{.*}}}

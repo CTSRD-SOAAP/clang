@@ -9,7 +9,7 @@
 // CHECK-I686: "-target-cpu" "pentium4"
 // CHECK-I686: "-resource-dir" "foo"
 // CHECK-I686: "-internal-isystem" "foo{{/|\\\\}}include"
-// CHECK-I686: "-internal-isystem" "{{.*}}{{/|\\\\}}..{{/|\\\\}}x86_64-nacl{{/|\\\\}}usr{{/|\\\\}}include"
+// CHECK-I686: "-internal-isystem" "{{.*}}{{/|\\\\}}..{{/|\\\\}}i686-nacl{{/|\\\\}}usr{{/|\\\\}}include"
 // CHECK-I686: "-internal-isystem" "{{.*}}{{/|\\\\}}..{{/|\\\\}}x86_64-nacl{{/|\\\\}}include"
 // CHECK-I686: as{{(.exe)?}}" "--32"
 // CHECK-I686: ld{{(.exe)?}}"
@@ -17,7 +17,7 @@
 // CHECK-I686: "-m" "elf_i386_nacl"
 // CHECK-I686: "-static"
 // CHECK-I686: "-L{{.*}}{{/|\\\\}}..{{/|\\\\}}x86_64-nacl{{/|\\\\}}lib32"
-// CHECK-I686: "-L{{.*}}{{/|\\\\}}..{{/|\\\\}}x86_64-nacl{{/|\\\\}}usr{{/|\\\\}}lib32"
+// CHECK-I686: "-L{{.*}}{{/|\\\\}}..{{/|\\\\}}i686-nacl{{/|\\\\}}usr{{/|\\\\}}lib"
 // CHECK-I686: "-Lfoo{{/|\\\\}}lib{{/|\\\\}}i686-nacl"
 // CHECK-I686-NOT: -lpthread
 //
@@ -46,7 +46,7 @@
 // RUN:   | FileCheck --check-prefix=CHECK-ARM %s
 // CHECK-ARM: {{.*}}clang{{.*}}" "-cc1"
 // CHECK-ARM: "-fuse-init-array"
-// CHECK-ARM: "-target-cpu" "cortex-a8"
+// CHECK-ARM: "-target-cpu" "generic"
 // CHECK-ARM: "-target-abi" "aapcs-linux"
 // CHECK-ARM: "-mfloat-abi" "hard"
 // CHECK-ARM: "-resource-dir" "foo"
@@ -118,7 +118,7 @@
 // CHECK-I686-CXX: "-resource-dir" "foo"
 // CHECK-I686-CXX: "-internal-isystem" "{{.*}}{{/|\\\\}}..{{/|\\\\}}x86_64-nacl{{/|\\\\}}include{{/|\\\\}}c++{{/|\\\\}}v1"
 // CHECK-I686-CXX: "-internal-isystem" "foo{{/|\\\\}}include"
-// CHECK-I686-CXX: "-internal-isystem" "{{.*}}{{/|\\\\}}..{{/|\\\\}}x86_64-nacl{{/|\\\\}}usr{{/|\\\\}}include"
+// CHECK-I686-CXX: "-internal-isystem" "{{.*}}{{/|\\\\}}..{{/|\\\\}}i686-nacl{{/|\\\\}}usr{{/|\\\\}}include"
 // CHECK-I686-CXX: "-internal-isystem" "{{.*}}{{/|\\\\}}..{{/|\\\\}}x86_64-nacl{{/|\\\\}}include"
 // CHECK-I686-CXX: "-lpthread"
 

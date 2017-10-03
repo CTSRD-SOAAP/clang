@@ -16,13 +16,19 @@ struct External { int v; };
 
 
 // Invalid usage.
-__declspec(dllexport) typedef int typedef1; // expected-warning{{'dllexport' attribute only applies to variables, functions and classes}}
-typedef __declspec(dllexport) int typedef2; // expected-warning{{'dllexport' attribute only applies to variables, functions and classes}}
-typedef int __declspec(dllexport) typedef3; // expected-warning{{'dllexport' attribute only applies to variables, functions and classes}}
-typedef __declspec(dllexport) void (*FunTy)(); // expected-warning{{'dllexport' attribute only applies to variables, functions and classes}}
-enum __declspec(dllexport) Enum {}; // expected-warning{{'dllexport' attribute only applies to variables, functions and classes}}
+__declspec(dllexport) typedef int typedef1;
+// expected-warning@-1{{'dllexport' attribute only applies to variables, functions and classes}}
+typedef __declspec(dllexport) int typedef2;
+// expected-warning@-1{{'dllexport' attribute only applies to variables, functions and classes}}
+typedef int __declspec(dllexport) typedef3;
+// expected-warning@-1{{'dllexport' attribute only applies to variables, functions and classes}}
+typedef __declspec(dllexport) void (*FunTy)();
+// expected-warning@-1{{'dllexport' attribute only applies to variables, functions and classes}}
+enum __declspec(dllexport) Enum {};
+// expected-warning@-1{{'dllexport' attribute only applies to variables, functions and classes}}
 #if __has_feature(cxx_strong_enums)
-  enum class __declspec(dllexport) EnumClass {}; // expected-warning{{'dllexport' attribute only applies to variables, functions and classes}}
+enum class __declspec(dllexport) EnumClass {};
+// expected-warning@-1{{'dllexport' attribute only applies to variables, functions and classes}}
 #endif
 
 
@@ -71,6 +77,10 @@ __declspec(dllexport) auto ExternalAutoTypeGlobal = External();
 
 // Thread local variables are invalid.
 __declspec(dllexport) __thread int ThreadLocalGlobal; // expected-error{{'ThreadLocalGlobal' cannot be thread local when declared 'dllexport'}}
+// But a static local TLS var in an export function is OK.
+inline void __declspec(dllexport) ExportedInlineWithThreadLocal() {
+  static __thread int OK; // no-error
+}
 
 // Export in local scope.
 void functionScope() {
@@ -726,7 +736,33 @@ __declspec(dllexport)        int  MemberRedecl::StaticField = 1;       // expect
 __declspec(dllexport) const  int  MemberRedecl::StaticConstField = 1;  // expected-error{{redeclaration of 'MemberRedecl::StaticConstField' cannot add 'dllexport' attribute}}
 __declspec(dllexport) constexpr int MemberRedecl::ConstexprField;      // expected-error{{redeclaration of 'MemberRedecl::ConstexprField' cannot add 'dllexport' attribute}}
 
+#ifdef MS
+struct __declspec(dllexport) ClassWithMultipleDefaultCtors {
+  ClassWithMultipleDefaultCtors(int = 40) {} // expected-error{{'__declspec(dllexport)' cannot be applied to more than one default constructor}}
+  ClassWithMultipleDefaultCtors(int = 30, ...) {} // expected-note{{declared here}}
+};
+template <typename T>
+struct ClassTemplateWithMultipleDefaultCtors {
+  __declspec(dllexport) ClassTemplateWithMultipleDefaultCtors(int = 40) {}      // expected-error{{'__declspec(dllexport)' cannot be applied to more than one default constructor}}
+  __declspec(dllexport) ClassTemplateWithMultipleDefaultCtors(int = 30, ...) {} // expected-note{{declared here}}
+};
 
+template <typename T> struct HasDefaults {
+  HasDefaults(int x = sizeof(T)) {} // expected-error {{invalid application of 'sizeof'}}
+};
+template struct __declspec(dllexport) HasDefaults<char>;
+
+template struct
+__declspec(dllexport) // expected-note {{in instantiation of default function argument expression for 'HasDefaults<void>' required here}}
+HasDefaults<void>; // expected-note {{in instantiation of member function 'HasDefaults<void>::HasDefaults' requested here}}
+
+template <typename T> struct HasDefaults2 {
+  __declspec(dllexport) // expected-note {{in instantiation of default function argument expression for 'HasDefaults2<void>' required here}}
+  HasDefaults2(int x = sizeof(T)) {} // expected-error {{invalid application of 'sizeof'}}
+};
+template struct HasDefaults2<void>; // expected-note {{in instantiation of member function 'HasDefaults2<void>::HasDefaults2' requested here}}
+
+#endif
 
 //===----------------------------------------------------------------------===//
 // Class member templates
@@ -1079,3 +1115,12 @@ template<typename T> template<typename U> __declspec(dllexport) constexpr int CT
 #endif // __has_feature(cxx_variable_templates)
 
 // FIXME: Precedence rules seem to be different for classes.
+
+//===----------------------------------------------------------------------===//
+// Lambdas
+//===----------------------------------------------------------------------===//
+// The MS ABI doesn't provide a stable mangling for lambdas, so they can't be imported or exported.
+#ifdef MS
+// expected-error@+2{{lambda cannot be declared 'dllexport'}}
+#endif
+auto Lambda = []() __declspec(dllexport) -> bool { return true; };

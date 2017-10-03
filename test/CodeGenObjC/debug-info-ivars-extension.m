@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -triple x86_64-apple-darwin10 -emit-llvm -g %s -o - | FileCheck %s
+// RUN: %clang_cc1 -triple x86_64-apple-darwin10 -emit-llvm -debug-info-kind=limited %s -o - | FileCheck %s
 
 // Make sure we generate debug symbols for ivars added by a class extension.
 
@@ -30,7 +30,7 @@ void gorf (I* pg) {
 // CHECK: !DIDerivedType(tag: DW_TAG_member, name: "a"
 // CHECK-SAME:           line: 7
 // CHECK-SAME:           baseType: ![[INT:[0-9]+]]
-// CHECK-SAME:           size: 32, align: 32
+// CHECK-SAME:           size: 32
 // CHECK-NOT:            offset:
 // CHECK-SAME:           flags: DIFlagPublic
 // CHECK: ![[INT]] = !DIBasicType(name: "int"
@@ -42,6 +42,6 @@ void gorf (I* pg) {
 // CHECK: !DIDerivedType(tag: DW_TAG_member, name: "b"
 // CHECK-SAME:           line: 18
 // CHECK-SAME:           baseType: ![[INT]]
-// CHECK-SAME:           size: 32, align: 32
+// CHECK-SAME:           size: 32
 // CHECK-NOT:            offset:
 // CHECK-SAME:           flags: DIFlagPublic

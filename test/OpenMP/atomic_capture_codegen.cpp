@@ -2,7 +2,6 @@
 // RUN: %clang_cc1 -fopenmp -x c -triple x86_64-apple-darwin10 -emit-pch -o %t %s
 // RUN: %clang_cc1 -fopenmp -x c -triple x86_64-apple-darwin10 -include-pch %t -verify %s -emit-llvm -o - | FileCheck %s
 // expected-no-diagnostics
-// REQUIRES: x86-registered-target
 #ifndef HEADER
 #define HEADER
 
@@ -72,7 +71,10 @@ struct BitFields4_packed {
 typedef float float2 __attribute__((ext_vector_type(2)));
 float2 float2x;
 
-register int rix __asm__("0");
+// Register "0" is currently an invalid register for global register variables.
+// Use "esp" instead of "0".
+// register int rix __asm__("0");
+register int rix __asm__("esp");
 
 int main() {
 // CHECK: [[PREV:%.+]] = atomicrmw add i8* @{{.+}}, i8 1 monotonic
@@ -609,50 +611,6 @@ int main() {
 // CHECK: store i8 [[DESIRED_I8]], i8* @{{.+}},
 #pragma omp atomic capture
   {bx = civ - bx; bv = bx;}
-// CHECK: [[EXPR_RE:%.+]] = load float, float* getelementptr inbounds ({ float, float }, { float, float }* @{{.+}}, i32 0, i32 0)
-// CHECK: [[EXPR_IM:%.+]] = load float, float* getelementptr inbounds ({ float, float }, { float, float }* @{{.+}}, i32 0, i32 1)
-// CHECK: [[X:%.+]] = load atomic i16, i16* [[X_ADDR:@.+]] monotonic
-// CHECK: br label %[[CONT:.+]]
-// CHECK: [[CONT]]
-// CHECK: [[EXPECTED:%.+]] = phi i16 [ [[X]], %{{.+}} ], [ [[OLD_X:%.+]], %[[CONT]] ]
-// CHECK: [[CONV:%.+]] = zext i16 [[EXPECTED]] to i32
-// CHECK: [[X_RVAL:%.+]] = sitofp i32 [[CONV]] to float
-// <Skip checks for complex calculations>
-// CHECK: [[X_RE_ADDR:%.+]] = getelementptr inbounds { float, float }, { float, float }* [[TEMP:%.+]], i32 0, i32 0
-// CHECK: [[X_RE:%.+]] = load float, float* [[X_RE_ADDR]]
-// CHECK: [[X_IM_ADDR:%.+]] = getelementptr inbounds { float, float }, { float, float }* [[TEMP]], i32 0, i32 1
-// CHECK: [[X_IM:%.+]] = load float, float* [[X_IM_ADDR]]
-// CHECK: [[NEW:%.+]] = fptoui float [[X_RE]] to i16
-// CHECK: store i16 [[NEW]], i16* [[TEMP:%.+]],
-// CHECK: [[DESIRED:%.+]] = load i16, i16* [[TEMP]],
-// CHECK: [[RES:%.+]] = cmpxchg i16* [[X_ADDR]], i16 [[EXPECTED]], i16 [[DESIRED]] monotonic monotonic
-// CHECK: [[OLD_X]] = extractvalue { i16, i1 } [[RES]], 0
-// CHECK: [[SUCCESS_FAIL:%.+]] = extractvalue { i16, i1 } [[RES]], 1
-// CHECK: br i1 [[SUCCESS_FAIL]], label %[[EXIT:.+]], label %[[CONT]]
-// CHECK: [[EXIT]]
-// CHECK: store i16 [[NEW]], i16* @{{.+}},
-#pragma omp atomic capture
-  usv = usx /= cfv;
-// CHECK: [[EXPR_RE:%.+]] = load double, double* getelementptr inbounds ({ double, double }, { double, double }* @{{.+}}, i32 0, i32 0)
-// CHECK: [[EXPR_IM:%.+]] = load double, double* getelementptr inbounds ({ double, double }, { double, double }* @{{.+}}, i32 0, i32 1)
-// CHECK: [[X:%.+]] = load atomic i64, i64* [[X_ADDR:@.+]] monotonic
-// CHECK: br label %[[CONT:.+]]
-// CHECK: [[CONT]]
-// CHECK: [[EXPECTED:%.+]] = phi i64 [ [[X]], %{{.+}} ], [ [[OLD_X:%.+]], %[[CONT]] ]
-// CHECK: [[X_RVAL:%.+]] = sitofp i64 [[EXPECTED]] to double
-// CHECK: [[ADD_RE:%.+]] = fadd double [[X_RVAL]], [[EXPR_RE]]
-// CHECK: [[ADD_IM:%.+]] = fadd double 0.000000e+00, [[EXPR_IM]]
-// CHECK: [[DESIRED:%.+]] = fptosi double [[ADD_RE]] to i64
-// CHECK: store i64 [[DESIRED]], i64* [[TEMP:%.+]],
-// CHECK: [[DESIRED:%.+]] = load i64, i64* [[TEMP]],
-// CHECK: [[RES:%.+]] = cmpxchg i64* [[X_ADDR]], i64 [[EXPECTED]], i64 [[DESIRED]] monotonic monotonic
-// CHECK: [[OLD_X]] = extractvalue { i64, i1 } [[RES]], 0
-// CHECK: [[SUCCESS_FAIL:%.+]] = extractvalue { i64, i1 } [[RES]], 1
-// CHECK: br i1 [[SUCCESS_FAIL]], label %[[EXIT:.+]], label %[[CONT]]
-// CHECK: [[EXIT]]
-// CHECK: store i64 [[EXPECTED]], i64* @{{.+}},
-#pragma omp atomic capture
-  {llv = llx; llx += cdv;}
 // CHECK: [[IDX:%.+]] = load i16, i16* @{{.+}}
 // CHECK: load i8, i8*
 // CHECK: [[VEC_ITEM_VAL:%.+]] = zext i1 %{{.+}} to i32

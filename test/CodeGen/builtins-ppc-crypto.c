@@ -1,13 +1,9 @@
 // REQUIRES: powerpc-registered-target
-// RUN: %clang_cc1 -faltivec -triple powerpc64le-unknown-unknown \
+// RUN: %clang_cc1 -target-feature +altivec -triple powerpc64le-unknown-unknown \
 // RUN: -target-feature +crypto -target-feature +power8-vector \
 // RUN: -emit-llvm %s -o - | FileCheck %s
 
-// RUN: %clang_cc1 -faltivec -triple powerpc64-unknown-unknown \
-// RUN: -target-feature +crypto -target-feature +power8-vector \
-// RUN: -emit-llvm %s -o - | FileCheck %s
-
-// RUN: %clang_cc1 -faltivec -triple powerpc-unknown-unknown \
+// RUN: %clang_cc1 -target-feature +altivec -triple powerpc64-unknown-unknown \
 // RUN: -target-feature +crypto -target-feature +power8-vector \
 // RUN: -emit-llvm %s -o - | FileCheck %s
 #include <altivec.h>
@@ -34,7 +30,7 @@ vector unsigned char test_vpmsumb(void)
   vector unsigned char a = B_INIT1
   vector unsigned char b = B_INIT2
   return __builtin_altivec_crypto_vpmsumb(a, b);
-// CHECK @llvm.ppc.altivec.crypto.vpmsumb
+// CHECK: @llvm.ppc.altivec.crypto.vpmsumb
 }
 
 // CHECK-LABEL: define <8 x i16> @test_vpmsumh
@@ -43,7 +39,7 @@ vector unsigned short test_vpmsumh(void)
   vector unsigned short a = H_INIT1
   vector unsigned short b = H_INIT2
   return __builtin_altivec_crypto_vpmsumh(a, b);
-// CHECK @llvm.ppc.altivec.crypto.vpmsumh
+// CHECK: @llvm.ppc.altivec.crypto.vpmsumh
 }
 
 // CHECK-LABEL: define <4 x i32> @test_vpmsumw
@@ -52,7 +48,7 @@ vector unsigned int test_vpmsumw(void)
   vector unsigned int a = W_INIT1
   vector unsigned int b = W_INIT2
   return __builtin_altivec_crypto_vpmsumw(a, b);
-// CHECK @llvm.ppc.altivec.crypto.vpmsumw
+// CHECK: @llvm.ppc.altivec.crypto.vpmsumw
 }
 
 // CHECK-LABEL: define <2 x i64> @test_vpmsumd
@@ -61,7 +57,7 @@ vector unsigned long long test_vpmsumd(void)
   vector unsigned long long a = D_INIT1
   vector unsigned long long b = D_INIT2
   return __builtin_altivec_crypto_vpmsumd(a, b);
-// CHECK @llvm.ppc.altivec.crypto.vpmsumd
+// CHECK: @llvm.ppc.altivec.crypto.vpmsumd
 }
 
 // CHECK-LABEL: define <2 x i64> @test_vsbox
@@ -112,6 +108,30 @@ vector unsigned long long test_vpermxord(void)
 // CHECK: @llvm.ppc.altivec.crypto.vpermxor
 }
 
+// CHECK-LABEL: test_vpermxorbc
+vector bool char test_vpermxorbc(vector bool char a,
+                                vector bool char b,
+                                vector bool char c) {
+  return vec_permxor(a, b, c);
+// CHECK: @llvm.ppc.altivec.crypto.vpermxor
+}
+
+// CHECK-LABEL: test_vpermxorsc
+vector signed char test_vpermxorsc(vector signed char a,
+                                   vector signed char b,
+                                   vector signed char c) {
+  return vec_permxor(a, b, c);
+// CHECK: @llvm.ppc.altivec.crypto.vpermxor
+}
+
+// CHECK-LABEL: test_vpermxoruc
+vector unsigned char test_vpermxoruc(vector unsigned char a,
+                                     vector unsigned char b,
+                                     vector unsigned char c) {
+  return vec_permxor(a, b, c);
+// CHECK: @llvm.ppc.altivec.crypto.vpermxor
+}
+
 // CHECK-LABEL: define <2 x i64> @test_vcipher
 vector unsigned long long test_vcipher(void)
 {
@@ -130,7 +150,7 @@ vector unsigned long long test_vcipherlast(void)
 // CHECK: @llvm.ppc.altivec.crypto.vcipherlast
 }
 
-// CHECK: @llvm.ppc.altivec.crypto.vncipher
+// CHECK-LABEL: @test_vncipher
 vector unsigned long long test_vncipher(void)
 {
   vector unsigned long long a = D_INIT1
@@ -172,7 +192,7 @@ vector unsigned char test_vpmsumb_e(void)
   vector unsigned char a = B_INIT1
   vector unsigned char b = B_INIT2
   return __builtin_crypto_vpmsumb(a, b);
-// CHECK @llvm.ppc.altivec.crypto.vpmsumb
+// CHECK: @llvm.ppc.altivec.crypto.vpmsumb
 }
 
 // CHECK-LABEL: define <8 x i16> @test_vpmsumh_e
@@ -181,7 +201,7 @@ vector unsigned short test_vpmsumh_e(void)
   vector unsigned short a = H_INIT1
   vector unsigned short b = H_INIT2
   return __builtin_crypto_vpmsumb(a, b);
-// CHECK @llvm.ppc.altivec.crypto.vpmsumh
+// CHECK: @llvm.ppc.altivec.crypto.vpmsumh
 }
 
 // CHECK-LABEL: define <4 x i32> @test_vpmsumw_e
@@ -190,7 +210,7 @@ vector unsigned int test_vpmsumw_e(void)
   vector unsigned int a = W_INIT1
   vector unsigned int b = W_INIT2
   return __builtin_crypto_vpmsumb(a, b);
-// CHECK @llvm.ppc.altivec.crypto.vpmsumw
+// CHECK: @llvm.ppc.altivec.crypto.vpmsumw
 }
 
 // CHECK-LABEL: define <2 x i64> @test_vpmsumd_e
@@ -199,7 +219,7 @@ vector unsigned long long test_vpmsumd_e(void)
   vector unsigned long long a = D_INIT1
   vector unsigned long long b = D_INIT2
   return __builtin_crypto_vpmsumb(a, b);
-// CHECK @llvm.ppc.altivec.crypto.vpmsumd
+// CHECK: @llvm.ppc.altivec.crypto.vpmsumd
 }
 
 // CHECK-LABEL: define <2 x i64> @test_vsbox_e
@@ -227,6 +247,7 @@ vector unsigned short test_vpermxorh_e(void)
   vector unsigned short b = H_INIT2
   vector unsigned short c = H_INIT2
   return __builtin_crypto_vpermxor(a, b, c);
+// CHECK: @llvm.ppc.altivec.crypto.vpermxor
 }
 
 // CHECK-LABEL: define <4 x i32> @test_vpermxorw_e
@@ -299,5 +320,101 @@ vector unsigned long long test_vshasigmad_e(void)
   vector unsigned long long a = D_INIT2
   return __builtin_crypto_vshasigmad(a, 0, 15);
 // CHECK: @llvm.ppc.altivec.crypto.vshasigmad
+}
+
+// CHECK-LABEL: @test_vec_sbox_be
+vector unsigned char test_vec_sbox_be(void)
+{
+  vector unsigned char a = B_INIT1
+  return vec_sbox_be(a);
+// CHECK: @llvm.ppc.altivec.crypto.vsbox
+}
+
+// CHECK-LABEL: @test_vec_cipher_be
+vector unsigned char test_vec_cipher_be(void)
+{
+  vector unsigned char a = B_INIT1
+  vector unsigned char b = B_INIT2
+  return vec_cipher_be(a, b);
+// CHECK: @llvm.ppc.altivec.crypto.vcipher
+}
+
+// CHECK-LABEL: @test_vec_cipherlast_be
+vector unsigned char test_vec_cipherlast_be(void)
+{
+  vector unsigned char a = B_INIT1
+  vector unsigned char b = B_INIT2
+  return vec_cipherlast_be(a, b);
+// CHECK: @llvm.ppc.altivec.crypto.vcipherlast
+}
+
+// CHECK-LABEL: @test_vec_ncipher_be
+vector unsigned char test_vec_ncipher_be(void)
+{
+  vector unsigned char a = B_INIT1
+  vector unsigned char b = B_INIT2
+  return vec_ncipher_be(a, b);
+// CHECK: @llvm.ppc.altivec.crypto.vncipher
+}
+
+// CHECK-LABEL: @test_vec_ncipherlast_be
+vector unsigned char test_vec_ncipherlast_be(void)
+{
+  vector unsigned char a = B_INIT1
+  vector unsigned char b = B_INIT2
+  return vec_ncipherlast_be(a, b);
+// CHECK: @llvm.ppc.altivec.crypto.vncipherlast
+}
+
+// CHECK-LABEL: @test_vec_shasigma_bew
+vector unsigned int test_vec_shasigma_bew(void)
+{
+  vector unsigned int a = W_INIT1
+  return vec_shasigma_be(a, 1, 15);
+// CHECK: @llvm.ppc.altivec.crypto.vshasigmaw
+}
+
+// CHECK-LABEL: @test_vec_shasigma_bed
+vector unsigned long long test_vec_shasigma_bed(void)
+{
+  vector unsigned long long a = D_INIT2
+  return vec_shasigma_be(a, 1, 15);
+// CHECK: @llvm.ppc.altivec.crypto.vshasigmad
+}
+
+// CHECK-LABEL: @test_vec_pmsum_beb
+vector unsigned short test_vec_pmsum_beb(void)
+{
+  vector unsigned char a = B_INIT1
+  vector unsigned char b = B_INIT2
+  return vec_pmsum_be(a, b);
+// CHECK: @llvm.ppc.altivec.crypto.vpmsumb
+}
+
+// CHECK-LABEL: @test_vec_pmsum_beh
+vector unsigned int test_vec_pmsum_beh(void)
+{
+  vector unsigned short a = H_INIT1
+  vector unsigned short b = H_INIT2
+  return vec_pmsum_be(a, b);
+// CHECK: @llvm.ppc.altivec.crypto.vpmsumh
+}
+
+// CHECK-LABEL: @test_vec_pmsum_bew
+vector unsigned long long test_vec_pmsum_bew(void)
+{
+  vector unsigned int a = W_INIT1
+  vector unsigned int b = W_INIT2
+  return vec_pmsum_be(a, b);
+// CHECK: @llvm.ppc.altivec.crypto.vpmsumw
+}
+
+// CHECK-LABEL: @test_vec_pmsum_bed
+vector unsigned __int128 test_vec_pmsum_bed(void)
+{
+  vector unsigned long long a = D_INIT1
+  vector unsigned long long b = D_INIT2
+  return vec_pmsum_be(a, b);
+// CHECK: @llvm.ppc.altivec.crypto.vpmsumd
 }
 

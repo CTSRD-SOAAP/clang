@@ -138,12 +138,12 @@
 // RUN:            -fmodule-map-file=%S/Inputs/explicit-build/module.modulemap \
 // RUN:            %s 2>&1 | FileCheck --check-prefix=CHECK-MULTIPLE-AS %s
 //
-// CHECK-MULTIPLE-AS: error: module 'a' is defined in both '{{.*}}/a{{.*}}.pcm' and '{{.*[/\\]}}a{{.*}}.pcm'
+// CHECK-MULTIPLE-AS: error: module 'a' is defined in both '{{.*[/\\]}}a{{.*}}.pcm' and '{{.*[/\\]}}a{{.*}}.pcm'
 
 // -------------------------------
 // Try to import a PCH with -fmodule-file=
 // RUN: %clang_cc1 -x c++ -std=c++11 -fmodules -fimplicit-module-maps -fmodules-cache-path=%t -Rmodule-build -fno-modules-error-recovery \
-// RUN:            -fmodule-name=a -emit-pch %S/Inputs/explicit-build/a.h -o %t/a.pch \
+// RUN:            -fmodule-name=a -emit-pch %S/Inputs/explicit-build/a.h -o %t/a.pch -DBUILDING_A_PCH \
 // RUN:            2>&1 | FileCheck --check-prefix=CHECK-NO-IMPLICIT-BUILD %s --allow-empty
 //
 // RUN: not %clang_cc1 -x c++ -std=c++11 -fmodules -fimplicit-module-maps -fmodules-cache-path=%t -Rmodule-build -fno-modules-error-recovery \
@@ -167,7 +167,7 @@
 // RUN:            -fmodule-file=%t/nonexistent.pcm \
 // RUN:            %s 2>&1 | FileCheck --check-prefix=CHECK-NO-FILE %s
 //
-// CHECK-NO-FILE: fatal error: module file '{{.*}}nonexistent.pcm' not found
+// CHECK-NO-FILE: fatal error: module file '{{.*}}nonexistent.pcm' not found: module file not found
 
 // RUN: mv %t/a.pcm %t/a-tmp.pcm
 // RUN: not %clang_cc1 -x c++ -std=c++11 -fmodules -fimplicit-module-maps -fmodules-cache-path=%t -Rmodule-build -fno-modules-error-recovery \
@@ -179,6 +179,7 @@
 // CHECK-NO-FILE-INDIRECT:      error: module file '{{.*}}a.pcm' not found
 // CHECK-NO-FILE-INDIRECT-NEXT: note: imported by module 'b' in '{{.*}}b.pcm'
 // CHECK-NO-FILE-INDIRECT-NEXT: note: imported by module 'c' in '{{.*}}c.pcm'
+// CHECK-NO-FILE-INDIRECT-NOT:  note:
 
 // -------------------------------
 // Check that we don't get upset if B's timestamp is newer than C's.
@@ -198,4 +199,6 @@
 // RUN:            -fmodule-file=%t/c.pcm \
 // RUN:            %s -DHAVE_A -DHAVE_B -DHAVE_C 2>&1 | FileCheck --check-prefix=CHECK-MISMATCHED-B %s
 //
-// CHECK-MISMATCHED-B: fatal error: malformed or corrupted AST file: {{.*}}b.pcm": module file out of date
+// CHECK-MISMATCHED-B:      fatal error: module file '{{.*}}b.pcm' is out of date and needs to be rebuilt: module file out of date
+// CHECK-MISMATCHED-B-NEXT: note: imported by module 'c'
+// CHECK-MISMATCHED-B-NOT:  note:

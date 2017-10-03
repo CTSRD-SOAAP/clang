@@ -17,9 +17,9 @@ public:
   S2(S2 &s2) : a(s2.a) {}
   const S2 &operator=(const S2 &) const;
   static float S2s; // expected-note {{static data member is predetermined as shared}}
-  static const float S2sc;
+  static const float S2sc; // expected-note {{static data member is predetermined as shared}}
 };
-const float S2::S2sc = 0; // expected-note {{static data member is predetermined as shared}}
+const float S2::S2sc = 0;
 const S2 b;
 const S2 ba[5];
 class S3 {
@@ -66,7 +66,7 @@ int foomain(int argc, char **argv) {
   I e(4);
   I g(5);
   int i;
-  int &j = i; // expected-note {{'j' defined here}}
+  int &j = i;
 #pragma omp parallel
 #pragma omp sections lastprivate // expected-error {{expected '(' after 'lastprivate'}}
   {
@@ -144,7 +144,7 @@ int foomain(int argc, char **argv) {
   }
 #pragma omp parallel shared(i)
 #pragma omp parallel private(i)
-#pragma omp sections lastprivate(j) // expected-error {{arguments of OpenMP clause 'lastprivate' cannot be of reference type}}
+#pragma omp sections lastprivate(j)
   {
     foo();
   }
@@ -172,7 +172,7 @@ int main(int argc, char **argv) {
   S3 m;
   S6 n(2);
   int i;
-  int &j = i; // expected-note {{'j' defined here}}
+  int &j = i;
 #pragma omp parallel
 #pragma omp sections lastprivate // expected-error {{expected '(' after 'lastprivate'}}
   {
@@ -300,7 +300,7 @@ int main(int argc, char **argv) {
     foo();
   }
 #pragma omp parallel
-#pragma omp sections lastprivate(j) // expected-error {{arguments of OpenMP clause 'lastprivate' cannot be of reference type}}
+#pragma omp sections lastprivate(j)
   {
     foo();
   }
@@ -311,6 +311,11 @@ int main(int argc, char **argv) {
   }
 #pragma omp parallel
 #pragma omp sections lastprivate(n) firstprivate(n) // OK
+  {
+    foo();
+  }
+  static int r;
+#pragma omp sections lastprivate(r) // OK
   {
     foo();
   }

@@ -17,14 +17,12 @@
 
 #include "clang/Basic/DiagnosticIDs.h"
 #include "clang/Basic/SourceLocation.h"
-#include "clang/Lex/DirectoryLookup.h"
+#include "clang/Basic/SourceManager.h"
 #include "clang/Lex/ModuleLoader.h"
 #include "clang/Lex/Pragma.h"
 #include "llvm/ADT/StringRef.h"
-#include <string>
 
 namespace clang {
-  class SourceLocation;
   class Token;
   class IdentifierInfo;
   class MacroDefinition;
@@ -201,19 +199,19 @@ public:
                              PragmaMessageKind Kind, StringRef Str) {
   }
 
-  /// \brief Callback invoked when a \#pragma gcc dianostic push directive
+  /// \brief Callback invoked when a \#pragma gcc diagnostic push directive
   /// is read.
   virtual void PragmaDiagnosticPush(SourceLocation Loc,
                                     StringRef Namespace) {
   }
 
-  /// \brief Callback invoked when a \#pragma gcc dianostic pop directive
+  /// \brief Callback invoked when a \#pragma gcc diagnostic pop directive
   /// is read.
   virtual void PragmaDiagnosticPop(SourceLocation Loc,
                                    StringRef Namespace) {
   }
 
-  /// \brief Callback invoked when a \#pragma gcc dianostic directive is read.
+  /// \brief Callback invoked when a \#pragma gcc diagnostic directive is read.
   virtual void PragmaDiagnostic(SourceLocation Loc, StringRef Namespace,
                                 diag::Severity mapping, StringRef Str) {}
 
@@ -249,10 +247,14 @@ public:
   }
 
   /// \brief Hook called whenever a macro \#undef is seen.
+  /// \param MacroNameTok The active Token
+  /// \param MD A MacroDefinition for the named macro.
+  /// \param Undef New MacroDirective if the macro was defined, null otherwise.
   ///
   /// MD is released immediately following this callback.
   virtual void MacroUndefined(const Token &MacroNameTok,
-                              const MacroDefinition &MD) {
+                              const MacroDefinition &MD,
+                              const MacroDirective *Undef) {
   }
   
   /// \brief Hook called whenever the 'defined' operator is seen.
@@ -264,7 +266,10 @@ public:
   /// \brief Hook called when a source range is skipped.
   /// \param Range The SourceRange that was skipped. The range begins at the
   /// \#if/\#else directive and ends after the \#endif/\#else directive.
-  virtual void SourceRangeSkipped(SourceRange Range) {
+  /// \param EndifLoc The end location of the 'endif' token, which may precede
+  /// the range skipped by the directive (e.g excluding comments after an
+  /// 'endif').
+  virtual void SourceRangeSkipped(SourceRange Range, SourceLocation EndifLoc) {
   }
 
   enum ConditionValueKind {
@@ -379,6 +384,12 @@ public:
     Second->Ident(Loc, str);
   }
 
+  void PragmaDirective(SourceLocation Loc,
+                       PragmaIntroducerKind Introducer) override {
+    First->PragmaDirective(Loc, Introducer);
+    Second->PragmaDirective(Loc, Introducer);
+  }
+
   void PragmaComment(SourceLocation Loc, const IdentifierInfo *Kind,
                      StringRef Str) override {
     First->PragmaComment(Loc, Kind, Str);
@@ -441,15 +452,17 @@ public:
     Second->MacroExpands(MacroNameTok, MD, Range, Args);
   }
 
-  void MacroDefined(const Token &MacroNameTok, const MacroDirective *MD) override {
+  void MacroDefined(const Token &MacroNameTok,
+                    const MacroDirective *MD) override {
     First->MacroDefined(MacroNameTok, MD);
     Second->MacroDefined(MacroNameTok, MD);
   }
 
   void MacroUndefined(const Token &MacroNameTok,
-                      const MacroDefinition &MD) override {
-    First->MacroUndefined(MacroNameTok, MD);
-    Second->MacroUndefined(MacroNameTok, MD);
+                      const MacroDefinition &MD,
+                      const MacroDirective *Undef) override {
+    First->MacroUndefined(MacroNameTok, MD, Undef);
+    Second->MacroUndefined(MacroNameTok, MD, Undef);
   }
 
   void Defined(const Token &MacroNameTok, const MacroDefinition &MD,
@@ -458,9 +471,9 @@ public:
     Second->Defined(MacroNameTok, MD, Range);
   }
 
-  void SourceRangeSkipped(SourceRange Range) override {
-    First->SourceRangeSkipped(Range);
-    Second->SourceRangeSkipped(Range);
+  void SourceRangeSkipped(SourceRange Range, SourceLocation EndifLoc) override {
+    First->SourceRangeSkipped(Range, EndifLoc);
+    Second->SourceRangeSkipped(Range, EndifLoc);
   }
 
   /// \brief Hook called whenever an \#if is seen.

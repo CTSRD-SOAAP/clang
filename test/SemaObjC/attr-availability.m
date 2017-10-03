@@ -13,7 +13,7 @@
 @interface A <P>
 - (void)method __attribute__((availability(macosx,introduced=10.1,deprecated=10.2))); // expected-note {{'method' has been explicitly marked deprecated here}}
 #if defined(WARN_PARTIAL)
-  // expected-note@+2 {{'partialMethod' has been explicitly marked partial here}}
+  // expected-note@+2 2 {{'partialMethod' has been explicitly marked partial here}}
 #endif
 - (void)partialMethod __attribute__((availability(macosx,introduced=10.8)));
 
@@ -23,37 +23,39 @@
 - (void)overridden4 __attribute__((availability(macosx,deprecated=10.3))); // expected-note{{overridden method is here}}
 - (void)overridden5 __attribute__((availability(macosx,unavailable)));
 - (void)overridden6 __attribute__((availability(macosx,introduced=10.3))); // expected-note{{overridden method is here}}
+- (void)unavailableMethod __attribute__((unavailable));
 @end
 
 // rdar://11475360
 @interface B : A
 - (void)method; // NOTE: we expect 'method' to *not* inherit availability.
 - (void)partialMethod; // Likewise.
-- (void)overridden __attribute__((availability(macosx,introduced=10.4))); // expected-warning{{overriding method introduced after overridden method on OS X (10.4 vs. 10.3)}}
+- (void)overridden __attribute__((availability(macosx,introduced=10.4))); // expected-warning{{overriding method introduced after overridden method on macOS (10.4 vs. 10.3)}}
 - (void)overridden2 __attribute__((availability(macosx,introduced=10.2)));
 - (void)overridden3 __attribute__((availability(macosx,deprecated=10.4)));
-- (void)overridden4 __attribute__((availability(macosx,deprecated=10.2))); // expected-warning{{overriding method deprecated before overridden method on OS X (10.3 vs. 10.2)}}
+- (void)overridden4 __attribute__((availability(macosx,deprecated=10.2))); // expected-warning{{overriding method deprecated before overridden method on macOS (10.3 vs. 10.2)}}
 - (void)overridden5 __attribute__((availability(macosx,introduced=10.3)));
-- (void)overridden6 __attribute__((availability(macosx,unavailable))); // expected-warning{{overriding method cannot be unavailable on OS X when its overridden method is available}}
+- (void)overridden6 __attribute__((availability(macosx,unavailable))); // expected-warning{{overriding method cannot be unavailable on macOS when its overridden method is available}}
+- (void)unavailableMethod; // does *not* inherit unavailability
 @end
 
 void f(A *a, B *b) {
-  [a method]; // expected-warning{{'method' is deprecated: first deprecated in OS X 10.2}}
+  [a method]; // expected-warning{{'method' is deprecated: first deprecated in macOS 10.2}}
   [b method]; // no-warning
-  [a proto_method]; // expected-warning{{'proto_method' is deprecated: first deprecated in OS X 10.2}}
-  [b proto_method]; // expected-warning{{'proto_method' is deprecated: first deprecated in OS X 10.2}}
+  [a proto_method]; // expected-warning{{'proto_method' is deprecated: first deprecated in macOS 10.2}}
+  [b proto_method]; // expected-warning{{'proto_method' is deprecated: first deprecated in macOS 10.2}}
 
 #if defined(WARN_PARTIAL)
-  // expected-warning@+2 {{'partialMethod' is partial: introduced in OS X 10.8}} expected-note@+2 {{explicitly redeclare 'partialMethod' to silence this warning}}
+  // expected-warning@+2 {{'partialMethod' is only available on macOS 10.8 or newer}} expected-note@+2 {{enclose 'partialMethod' in an @available check to silence this warning}}
 #endif
   [a partialMethod];
   [b partialMethod];  // no warning
 #if defined(WARN_PARTIAL)
-  // expected-warning@+2 {{'partial_proto_method' is partial: introduced in OS X 10.8}} expected-note@+2 {{explicitly redeclare 'partial_proto_method' to silence this warning}}
+  // expected-warning@+2 {{'partial_proto_method' is only available on macOS 10.8 or newer}} expected-note@+2 {{enclose 'partial_proto_method' in an @available check to silence this warning}}
 #endif
   [a partial_proto_method];
 #if defined(WARN_PARTIAL)
-  // expected-warning@+2 {{'partial_proto_method' is partial: introduced in OS X 10.8}} expected-note@+2 {{explicitly redeclare 'partial_proto_method' to silence this warning}}
+  // expected-warning@+2 {{'partial_proto_method' is only available on macOS 10.8 or newer}} expected-note@+2 {{enclose 'partial_proto_method' in an @available check to silence this warning}}
 #endif
   [b partial_proto_method];
 }
@@ -64,7 +66,10 @@ void f(A *a, B *b) {
 @end
 
 void f_after_redecl(A *a, B *b) {
-  [a partialMethod]; // no warning
+#ifdef WARN_PARTIAL
+  // expected-warning@+2{{'partialMethod' is only available on macOS 10.8 or newer}} expected-note@+2 {{@available}}
+#endif
+  [a partialMethod];
   [b partialMethod]; // no warning
   [a partial_proto_method]; // no warning
   [b partial_proto_method]; // no warning
@@ -87,7 +92,7 @@ void f_after_redecl(A *a, B *b) {
 
 @implementation D
 - (void) method {
-  [super method]; // expected-warning {{'method' is deprecated: first deprecated in OS X 10.2}}
+  [super method]; // expected-warning {{'method' is deprecated: first deprecated in macOS 10.2}}
 }
 @end
 
@@ -131,6 +136,10 @@ id NSNibOwner, topNibObjects;
 @end
 
 @interface PartialI <PartialProt>
+#ifdef WARN_PARTIAL
+// expected-note@+3{{marked partial here}}
+// expected-note@+3{{marked partial here}}
+#endif
 - (void)partialMethod __attribute__((availability(macosx,introduced=10.8)));
 + (void)partialMethod __attribute__((availability(macosx,introduced=10.8)));
 @end
@@ -158,37 +167,46 @@ id NSNibOwner, topNibObjects;
 @end
 
 void partialfun(PartialI* a) {
-  [a partialMethod]; // no warning
+#ifdef WARN_PARTIAL
+  // expected-warning@+2 {{'partialMethod' is only available on macOS 10.8 or newer}} expected-note@+2{{@available}}
+#endif
+  [a partialMethod];
   [a ipartialMethod1]; // no warning
 #if defined(WARN_PARTIAL)
-  // expected-warning@+2 {{'ipartialMethod2' is partial: introduced in OS X 10.8}} expected-note@+2 {{explicitly redeclare 'ipartialMethod2' to silence this warning}}
+  // expected-warning@+2 {{'ipartialMethod2' is only available on macOS 10.8 or newer}} expected-note@+2 {{enclose 'ipartialMethod2' in an @available check to silence this warning}}
 #endif
   [a ipartialMethod2];
   [a ppartialMethod]; // no warning
-  [PartialI partialMethod]; // no warning
+#ifdef WARN_PARTIAL
+  // expected-warning@+2 {{'partialMethod' is only available on macOS 10.8 or newer}} expected-note@+2 {{@available}}
+#endif
+  [PartialI partialMethod];
   [PartialI ipartialMethod1]; // no warning
 #if defined(WARN_PARTIAL)
-  // expected-warning@+2 {{'ipartialMethod2' is partial: introduced in OS X 10.8}} expected-note@+2 {{explicitly redeclare 'ipartialMethod2' to silence this warning}}
+  // expected-warning@+2 {{'ipartialMethod2' is only available on macOS 10.8 or newer}} expected-note@+2 {{enclose 'ipartialMethod2' in an @available check to silence this warning}}
 #endif
   [PartialI ipartialMethod2];
   [PartialI ppartialMethod]; // no warning
 }
 
 #if defined(WARN_PARTIAL)
-  // expected-note@+2 {{'PartialI2' has been explicitly marked partial here}}
+  // expected-note@+2 2 {{'PartialI2' has been explicitly marked partial here}}
 #endif
 __attribute__((availability(macosx, introduced = 10.8))) @interface PartialI2
 @end
 
 #if defined(WARN_PARTIAL)
-  // expected-warning@+2 {{'PartialI2' is partial: introduced in OS X 10.8}} expected-note@+2 {{explicitly redeclare 'PartialI2' to silence this warning}}
+// expected-warning@+2 {{'PartialI2' is only available on macOS 10.8 or newer}} expected-note@+2 {{annotate 'partialinter1' with an availability attribute to silence}}
 #endif
 void partialinter1(PartialI2* p) {
 }
 
 @class PartialI2;
 
-void partialinter2(PartialI2* p) { // no warning
+#ifdef WARN_PARTIAL
+// expected-warning@+2 {{'PartialI2' is only available on macOS 10.8 or newer}} expected-note@+2 {{annotate 'partialinter2' with an availability attribute to silence}}
+#endif
+void partialinter2(PartialI2* p) {
 }
 
 
@@ -206,3 +224,125 @@ void use_myEnum() {
   // expected-error@+1 {{MyEnum_Blah' is unavailable: not available}}
   MyEnum e = MyEnum_Blah; 
 }
+
+// Test that the availability of (optional) protocol methods is not
+// inherited be implementations of those protocol methods.
+@protocol AvailabilityP2
+@optional
+-(void)methodA __attribute__((availability(macosx,introduced=10.1,deprecated=10.2))); // expected-note 4{{'methodA' has been explicitly marked deprecated here}} \
+// expected-note 2{{protocol method is here}}
+-(void)methodB __attribute__((unavailable)); // expected-note 4{{'methodB' has been explicitly marked unavailable here}}
+-(void)methodC;
+@end
+
+void testAvailabilityP2(id<AvailabilityP2> obj) {
+  [obj methodA]; // expected-warning{{'methodA' is deprecated: first deprecated in macOS 10.2}}
+  [obj methodB]; // expected-error{{'methodB' is unavailable}}
+}
+
+@interface ImplementsAvailabilityP2a <AvailabilityP2>
+-(void)methodA;
+-(void)methodB;
+@end
+
+void testImplementsAvailabilityP2a(ImplementsAvailabilityP2a *obj) {
+  [obj methodA]; // okay: availability not inherited
+  [obj methodB]; // okay: unavailability not inherited
+}
+
+__attribute__((objc_root_class))
+@interface ImplementsAvailabilityP2b <AvailabilityP2>
+@end
+
+@implementation ImplementsAvailabilityP2b
+-(void)methodA {
+  // Make sure we're not inheriting availability.
+  id<AvailabilityP2> obj = self;
+  [obj methodA]; // expected-warning{{'methodA' is deprecated: first deprecated in macOS 10.2}}
+  [obj methodB]; // expected-error{{'methodB' is unavailable}}
+}
+-(void)methodB {
+  // Make sure we're not inheriting unavailability.
+  id<AvailabilityP2> obj = self;
+  [obj methodA]; // expected-warning{{'methodA' is deprecated: first deprecated in macOS 10.2}}
+  [obj methodB]; // expected-error{{'methodB' is unavailable}}
+}
+
+@end
+
+void testImplementsAvailabilityP2b(ImplementsAvailabilityP2b *obj) {
+  // still get warnings/errors because we see the protocol version.
+
+  [obj methodA]; // expected-warning{{'methodA' is deprecated: first deprecated in macOS 10.2}}
+  [obj methodB]; // expected-error{{'methodB' is unavailable}}
+}
+
+__attribute__((objc_root_class))
+@interface ImplementsAvailabilityP2c <AvailabilityP2>
+-(void)methodA __attribute__((availability(macosx,introduced=10.2))); // expected-warning{{method introduced after the protocol method it implements on macOS (10.2 vs. 10.1)}}
+-(void)methodB __attribute__((unavailable));
+@end
+
+__attribute__((objc_root_class))
+@interface ImplementsAvailabilityP2d <AvailabilityP2>
+@end
+
+@implementation ImplementsAvailabilityP2d
+-(void)methodA __attribute__((availability(macosx,introduced=10.2))) // expected-warning{{method introduced after the protocol method it implements on macOS (10.2 vs. 10.1)}}
+{
+}
+-(void)methodB __attribute__((unavailable)) {
+}
+@end
+
+__attribute__((objc_root_class))
+@interface InheritUnavailableSuper
+-(void)method __attribute__((unavailable)); // expected-note{{'method' has been explicitly marked unavailable here}}
+@end
+
+@interface InheritUnavailableSub : InheritUnavailableSuper
+-(void)method;
+@end
+
+@implementation InheritUnavailableSub
+-(void)method {
+  InheritUnavailableSuper *obj = self;
+  [obj method]; // expected-error{{'method' is unavailable}}
+}
+@end
+
+#if defined(WARN_PARTIAL)
+
+int fn_10_5() __attribute__((availability(macosx, introduced=10.5)));
+int fn_10_7() __attribute__((availability(macosx, introduced=10.7))); // expected-note{{marked partial here}}
+int fn_10_8() __attribute__((availability(macosx, introduced=10.8))) { // expected-note{{marked partial here}}
+  return fn_10_7();
+}
+
+__attribute__((objc_root_class))
+@interface LookupAvailabilityBase
+-(void) method1;
+@end
+
+@implementation LookupAvailabilityBase
+-(void)method1 { fn_10_7(); } // expected-warning{{only available on macOS 10.7}} expected-note{{@available}}
+@end
+
+__attribute__((availability(macosx, introduced=10.7)))
+@interface LookupAvailability : LookupAvailabilityBase
+- (void)method2;
+- (void)method3;
+- (void)method4 __attribute__((availability(macosx, introduced=10.8)));
+@end
+
+@implementation LookupAvailability
+-(void)method2 { fn_10_7(); }
+-(void)method3 { fn_10_8(); } // expected-warning{{only available on macOS 10.8}} expected-note{{@available}}
+-(void)method4 { fn_10_8(); }
+@end
+
+int old_func() __attribute__((availability(macos, introduced=10.4))) {
+  fn_10_5();
+}
+
+#endif

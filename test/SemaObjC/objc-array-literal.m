@@ -11,14 +11,14 @@ typedef unsigned int NSUInteger;
 
 void checkNSArrayUnavailableDiagnostic() {
   id obj;
-  id arr = @[obj]; // expected-error {{NSArray must be available to use Objective-C array literals}}
+  id arr = @[obj]; // expected-error {{definition of class NSArray must be available to use Objective-C array literals}}
 }
 
-@class NSArray;
+@class NSArray; // expected-note {{forward declaration of class here}}
 
 void checkNSArrayFDDiagnostic() {
   id obj;
-  id arr = @[obj]; // expected-error {{declaration of 'arrayWithObjects:count:' is missing in NSArray class}}
+  id arr = @[obj]; // expected-error {{definition of class NSArray must be available to use Objective-C array literals}}
 }
 
 @class NSString;
@@ -66,4 +66,12 @@ id radar15147688() {
   id x = @[ @"stuff", CONCATSTR ]; // no-warning
   x = @[ @"stuff", @"hello" "world"]; // expected-warning {{concatenated NSString literal for an NSArray expression}}
   return x;
+}
+
+enum XXXYYYZZZType { XXXYYYZZZTypeAny }; // expected-note {{'XXXYYYZZZTypeAny' declared here}}
+void foo() {
+  NSArray *array = @[
+    @(XXXYYYZZZTypeA),                 // expected-error {{use of undeclared identifier 'XXXYYYZZZTypeA'; did you mean 'XXXYYYZZZTypeAny'}}
+    @(XXXYYYZZZTypeSomethingSomething) // expected-error {{use of undeclared identifier 'XXXYYYZZZTypeSomethingSomething'}}
+  ];
 }
